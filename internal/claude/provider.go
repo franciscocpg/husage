@@ -1,18 +1,14 @@
-// Package claude reads Claude subscription usage without changing login state.
+// Package claude reads subscription usage and delegates credential renewal to Claude CLI.
 package claude
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
-	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,14 +26,18 @@ type Options struct {
 }
 
 type Provider struct {
-	opts      Options
-	client    *http.Client
-	url       string
-	now       func() time.Time
-	cached    []subscription.Account
-	nextFetch time.Time
-	cachedID  string
-	readToken func(context.Context) (string, error)
+	opts             Options
+	client           *http.Client
+	url              string
+	now              func() time.Time
+	cached           []subscription.Account
+	nextFetch        time.Time
+	cachedID         string
+	readToken        func(context.Context) (string, error)
+	readCredentials  func(context.Context) (oauthCredentials, error)
+	renewCredentials func(context.Context, oauthCredentials) error
+	authFailed       bool
+	authFailedToken  string
 }
 
 func New(opts Options) *Provider {
@@ -65,7 +65,15 @@ func (p *Provider) Load(ctx context.Context) ([]subscription.Account, error) {
 func (p *Provider) loadCurrent(ctx context.Context, id identity) []subscription.Account {
 	// A new login/account must not inherit another account's usage or cooldown.
 	if p.cachedID == id.key() && p.now().Before(p.nextFetch) {
-		return p.cached
+		// A user may have completed login since our last failed attempt. Detect
+		// that locally so manual reload works without restarting or waiting.
+		if !p.authFailed || p.readToken != nil {
+			return p.cached
+		}
+		creds, err := p.credentials(ctx)
+		if err != nil || creds.expired(p.now()) || creds.AccessToken == p.authFailedToken {
+			return p.cached
+		}
 	}
 	if p.cachedID != id.key() {
 		p.cached = nil
@@ -85,9 +93,21 @@ func (p *Provider) loadCurrent(ctx context.Context, id identity) []subscription.
 		readToken = p.token
 	}
 	token, err := readToken(ctx)
+	p.authFailed = err != nil
+	p.authFailedToken = ""
 	if err == nil {
 		var windows []subscription.Window
-		windows, err = p.fetch(ctx, token)
+		windows, err = p.fetchForIdentity(ctx, id, token)
+		if errors.Is(err, errUsageUnauthorized) && p.readToken == nil {
+			p.authFailed = true
+			p.authFailedToken = token
+			token, err = p.renewToken(ctx, token)
+			if err == nil {
+				windows, err = p.fetchForIdentity(ctx, id, token)
+				p.authFailed = errors.Is(err, errUsageUnauthorized)
+				p.authFailedToken = token
+			}
+		}
 		if err == nil {
 			a.Windows = windows
 			a.UpdatedAt = p.now()
@@ -100,42 +120,17 @@ func (p *Provider) loadCurrent(ctx context.Context, id identity) []subscription.
 	return p.cached
 }
 
-func (p *Provider) token(ctx context.Context) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	dir := p.opts.SecureDir
-	if dir == "" {
-		dir = p.opts.ConfigDir
+func (p *Provider) fetchForIdentity(ctx context.Context, id identity, token string) ([]subscription.Window, error) {
+	if p.readToken == nil {
+		current, err := readIdentity(p.opts.identityPath())
+		if err != nil || current.key() != id.key() {
+			return nil, errors.New("Claude account changed during renewal. Reload to read the new account.")
+		}
 	}
-	service := "Claude Code-credentials"
-	if dir != "" {
-		service += fmt.Sprintf("-%x", sha256.Sum256([]byte(dir)))[:9]
-	}
-	if dir == "" {
-		dir = filepath.Join(p.opts.Home, ".claude")
-	}
-	var data []byte
-	if runtime.GOOS == "darwin" {
-		// Output is parsed in memory and never printed or persisted.
-		data, _ = exec.CommandContext(ctx, "/usr/bin/security", "find-generic-password", "-s", service, "-w").Output()
-	}
-	if len(data) == 0 {
-		data, _ = os.ReadFile(filepath.Join(dir, ".credentials.json"))
-	}
-	var creds struct {
-		OAuth struct {
-			AccessToken string `json:"accessToken"`
-			ExpiresAt   int64  `json:"expiresAt"`
-		} `json:"claudeAiOauth"`
-	}
-	if json.Unmarshal(data, &creds) != nil || creds.OAuth.AccessToken == "" {
-		return "", errors.New("No Claude login found. Run claude and use /login, then restart husage.")
-	}
-	if creds.OAuth.ExpiresAt > 0 && p.now().UnixMilli() >= creds.OAuth.ExpiresAt {
-		return "", errors.New("Claude login expired. Open Claude Code to renew it, then restart husage.")
-	}
-	return creds.OAuth.AccessToken, nil
+	return p.fetch(ctx, token)
 }
+
+var errUsageUnauthorized = errors.New("Claude usage rejected this login. Sign in again for this profile.")
 
 type apiWindow struct {
 	Used  *float64   `json:"utilization"`
@@ -158,8 +153,10 @@ func (p *Provider) fetch(ctx context.Context, token string) ([]subscription.Wind
 	defer resp.Body.Close()
 	switch resp.StatusCode {
 	case http.StatusOK:
-	case http.StatusUnauthorized, http.StatusForbidden:
-		return nil, errors.New("Claude usage access denied. Open Claude Code and use /login.")
+	case http.StatusUnauthorized:
+		return nil, errUsageUnauthorized
+	case http.StatusForbidden:
+		return nil, p.loginError("Claude usage access denied.")
 	case http.StatusTooManyRequests:
 		delay := 5 * time.Minute
 		if n, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && n > 0 && n <= 86400 {

@@ -6,7 +6,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"strings"
+
+	"github.com/franciscocpg/husage/internal/claudecli"
 )
 
 // Login implements Bubble Tea's ExecCommand without coupling storage to the UI.
@@ -55,31 +56,14 @@ func (l *Login) Run() error {
 	return nil
 }
 
-var loginUnset = []string{"CLAUDE_SECURESTORAGE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"}
+var loginUnset = claudecli.Unset
 
 func loginEnvironment(environ []string, dir string) []string {
-	out := make([]string, 0, len(environ)+1)
-	for _, entry := range environ {
-		key, _, _ := strings.Cut(entry, "=")
-		exclude := key == "CLAUDE_CONFIG_DIR"
-		for _, name := range loginUnset {
-			exclude = exclude || key == name
-		}
-		if !exclude {
-			out = append(out, entry)
-		}
-	}
-	return append(out, "CLAUDE_CONFIG_DIR="+dir)
+	return claudecli.Environment(environ, dir, "")
 }
 
 // LoginCommand is the shell-readable equivalent of Run. Run itself never uses a
 // shell; executable arguments and environment variables are passed separately.
 func LoginCommand(dir string) string {
-	lines := []string{"env"}
-	for _, name := range loginUnset {
-		lines = append(lines, "  -u "+name)
-	}
-	quoted := "'" + strings.ReplaceAll(dir, "'", "'\"'\"'") + "'"
-	lines = append(lines, "  CLAUDE_CONFIG_DIR="+quoted, "  claude auth login --claudeai")
-	return strings.Join(lines, " \\\n")
+	return claudecli.LoginCommand(dir, "")
 }

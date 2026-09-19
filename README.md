@@ -61,7 +61,9 @@ The live dashboard combines independently authenticated Claude configurations. E
 
 The direct provider requests usage at most once every five minutes per configuration during a run and honors longer `Retry-After` delays. Pressing `r` does not bypass this cooldown. Network failures preserve the last successful usage with a visible error. Data older than ten minutes is marked stale; a past reset is labeled rather than inventing fresh usage. Missing limits and reset times remain unavailable.
 
-Usage polling never switches accounts, runs inference, or refreshes OAuth tokens. Profile creation delegates login to the Claude CLI after you confirm its command; Claude manages the credentials in its native store. If an existing login expires, open Claude Code to renew it, then restart husage. macOS may ask for access to the existing Keychain item. Credential storage follows [Claude Code's authentication documentation](https://code.claude.com/docs/en/authentication#credential-management).
+Usage polling never switches accounts or runs inference. When a profile's access token expires, husage delegates renewal to the native `claude auth login --claudeai` command using that profile's saved refresh token and scopes. Claude's [documented non-interactive login environment](https://code.claude.com/docs/en/env-vars) avoids opening a browser and lets Claude manage credential persistence. The refresh token is passed only in the child process environment, never in command arguments or terminal output. A usage HTTP 401 triggers at most one renewal and retry; HTTP 403 and rate limits do not trigger renewal. Failed renewals back off for five minutes. macOS may ask for access to the existing Keychain item. Credential storage follows [Claude Code's authentication documentation](https://code.claude.com/docs/en/authentication#credential-management).
+
+If a refresh token has expired or been revoked, or its saved scopes are missing, automatic renewal cannot recover it. The dashboard shows a login command targeting that specific profile. Complete that login, then press **r**; husage detects the new credentials without a restart. Profile creation still asks you to confirm the interactive login command before running it. Concurrent husage renewals for the same credential store are serialized with a short-lived lock under `~/.config/husage/locks/`.
 
 ## Add a profile in the TUI
 
@@ -99,7 +101,7 @@ To make these profiles the default, create `~/.config/husage/profiles.json`:
 
 After that, just run `./bin/husage`. This file contains directory paths only. husage never copies or saves tokens. `--profiles /path/to/profiles.json` selects a different list, and explicit `--claude-dir` arguments override the list. The two-account demo remains entirely offline.
 
-For an expired secondary login, repeat its login command above or open Claude Code with that same `CLAUDE_CONFIG_DIR`, then restart husage.
+For a secondary login that cannot be renewed automatically, repeat its login command above or open Claude Code with that same `CLAUDE_CONFIG_DIR`, then press **r** in husage.
 
 ## Options
 

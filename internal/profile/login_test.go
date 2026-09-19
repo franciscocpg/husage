@@ -22,6 +22,8 @@ func TestLoginRunsClaudeWithIsolatedCredentialsAndCanRetry(t *testing.T) {
 [ -z "${CLAUDE_CODE_OAUTH_TOKEN+x}" ] || exit 43
 [ -z "${ANTHROPIC_API_KEY+x}" ] || exit 44
 [ -z "${ANTHROPIC_AUTH_TOKEN+x}" ] || exit 45
+[ -z "${CLAUDE_CODE_OAUTH_REFRESH_TOKEN+x}" ] || exit 46
+[ -z "${CLAUDE_CODE_OAUTH_SCOPES+x}" ] || exit 47
 printf '%s' "$CLAUDE_CONFIG_DIR" > "$HUSAGE_LOGIN_RECEIPT"
 printf 'fake login output'
 printf '{"installMethod":"native"}' > "$CLAUDE_CONFIG_DIR/.claude.json"
