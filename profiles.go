@@ -33,7 +33,7 @@ func claudeProfiles(home string, dirs []string, profilesPath string) (claude.Opt
 			return active, nil, err
 		}
 	}
-	if len(dirs) == 0 {
+	if dirs == nil {
 		dirs = []string{"current"}
 	}
 	options := make([]claude.Options, 0, len(dirs))
@@ -75,6 +75,12 @@ func savedDirectories(home, path, provider string) ([]string, error) {
 	var dirs []string
 	for _, entry := range entries {
 		if entry.Provider == provider {
+			if entry.Disabled {
+				if dirs == nil {
+					dirs = []string{}
+				}
+				continue
+			}
 			dirs = append(dirs, entry.Directory)
 		}
 	}
@@ -96,7 +102,7 @@ func codexProfiles(home string, dirs []string, profilesPath string) ([]codex.Opt
 			return nil, err
 		}
 	}
-	optional := len(dirs) == 0
+	optional := dirs == nil
 	if optional {
 		dirs = []string{"current"}
 	}

@@ -62,6 +62,12 @@ type Model struct {
 	configInput                                []rune
 	configCursor, configScroll                 int
 	configError                                string
+	removeActions                              *RemoveActions
+	removeOpen, removeConfirm, removing        bool
+	removeIndex, removeScroll                  int
+	removeChoices                              []subscription.Account
+	removeError                                string
+	removed                                    map[string]bool
 }
 
 func New(ctx context.Context, p subscription.Provider, refresh time.Duration, location *time.Location, demo bool) Model {
@@ -82,6 +88,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = max(1, msg.Width)
 		m.height = max(1, msg.Height)
 	case tea.KeyPressMsg:
+		if m.removeOpen {
+			return m.updateRemoveKey(msg)
+		}
 		if m.configOpen {
 			return m.updateConfigKey(msg)
 		}
@@ -89,6 +98,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateProfileKey(msg)
 		}
 		switch msg.String() {
+		case "d":
+			if m.removeActions != nil {
+				m.removeOpen, m.removeConfirm = true, false
+				m.removeIndex, m.removeScroll, m.removeError = 0, 0, ""
+				m.removeChoices = append([]subscription.Account{}, m.accounts...)
+			}
 		case "c":
 			if m.configActions != nil {
 				m.configOpen = true
@@ -135,7 +150,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.err
 		m.now = time.Now()
 		if msg.err == nil {
-			m.accounts = msg.accounts
+			m.accounts = m.withoutRemoved(msg.accounts)
 		}
 		if m.reloadAfterAdd {
 			m.reloadAfterAdd = false
@@ -168,7 +183,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.createdDirectory = msg.directory
+		m.removed = nil
 		m.profileScroll = 0
+		if m.loading {
+			m.reloadAfterAdd = true
+		} else {
+			m.loading = true
+			return m, m.load()
+		}
+	case removedMsg:
+		m.removing = false
+		if msg.err != nil {
+			m.removeError = msg.err.Error()
+			m.removeScroll = 1 << 20
+			return m, nil
+		}
+		if m.removed == nil {
+			m.removed = map[string]bool{}
+		}
+		m.removed[accountKey(msg.account)] = true
+		m.accounts = m.withoutRemoved(m.accounts)
+		m.removeOpen, m.removeConfirm = false, false
+		m.offset = 0
 		if m.loading {
 			m.reloadAfterAdd = true
 		} else {
@@ -206,13 +242,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) bodyHeight() int { return max(1, m.height-7) }
 func (m Model) contentWidth() int {
 	w := max(1, m.width-4)
-	if m.profileOpen || m.configOpen {
+	if m.profileOpen || m.configOpen || m.removeOpen {
 		return min(90, w)
 	}
 	return w
 }
 
 func (m Model) bodyLines() []string {
+	if m.removeOpen {
+		return m.removeLines()
+	}
 	if m.configOpen {
 		return m.configLines()
 	}
@@ -259,6 +298,9 @@ func (m Model) View() tea.View {
 	if m.configOpen {
 		start = min(m.configScroll, max(0, len(lines)-h))
 	}
+	if m.removeOpen {
+		start = min(m.removeScroll, max(0, len(lines)-h))
+	}
 	end := min(len(lines), start+h)
 	visible := append([]string{}, lines[start:end]...)
 	for len(visible) < h {
@@ -267,6 +309,9 @@ func (m Model) View() tea.View {
 	footer := "r refresh   ↑↓ scroll   q quit"
 	if m.configActions != nil {
 		footer = "c config   " + footer
+	}
+	if m.removeActions != nil {
+		footer = "d remove profile   " + footer
 	}
 	if m.profileActions != nil {
 		footer = "a add profile   " + footer
@@ -304,12 +349,23 @@ func (m Model) View() tea.View {
 			footer = "Saving configuration…"
 		}
 	}
-	if len(lines) > h && !m.profileOpen && !m.configOpen {
+	if m.removeOpen {
+		footer = "↑↓ select  enter review  esc cancel"
+		if m.removeConfirm {
+			footer = "enter remove  esc cancel"
+		}
+		if m.removing {
+			footer = "Removing subscription…"
+		} else if len(lines) > h {
+			footer += "  pg↑↓ scroll"
+		}
+	}
+	if len(lines) > h && !m.profileOpen && !m.configOpen && !m.removeOpen {
 		footer += fmt.Sprintf("   %d–%d/%d", start+1, end, len(lines))
 	}
 	content := []string{header, dim.Render(status), ""}
 	content = append(content, visible...)
-	content = append(content, "", dim.Render(footer), "")
+	content = append(content, "", renderShortcuts(footer), "")
 	for i, line := range content {
 		content[i] = "  " + ansi.Truncate(line, w, "")
 	}
@@ -319,6 +375,19 @@ func (m Model) View() tea.View {
 	v := tea.NewView(base.Width(m.width).Height(m.height).Render(strings.Join(content, "\n")))
 	v.AltScreen = true
 	return v
+}
+
+func renderShortcuts(text string) string {
+	words := strings.Split(text, " ")
+	for i, word := range words {
+		switch word {
+		case "a", "c", "d", "r", "q", "↑↓", "enter", "esc", "tab", "pg↑↓":
+			words[i] = accent.Bold(true).Render(word)
+		default:
+			words[i] = dim.Render(word)
+		}
+	}
+	return strings.Join(words, dim.Render(" "))
 }
 
 // renderAccounts keeps providers in first-seen order and preserves the account

@@ -131,7 +131,7 @@ func (s Store) readPaths(dir string) ([]json.RawMessage, error) {
 		return nil, err
 	}
 	for _, entry := range entries {
-		if entry.Provider != s.Kind() {
+		if entry.Provider != s.Kind() || entry.Disabled {
 			continue
 		}
 		p := entry.Directory
@@ -199,31 +199,38 @@ func (s Store) Register(ctx context.Context, name string) (string, error) {
 		entry, _ = json.Marshal(Entry{Provider: s.Kind(), Directory: dir})
 	}
 	paths = append(paths, entry)
+	if err := writePaths(ctx, config, paths); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+func writePaths(ctx context.Context, config string, paths []json.RawMessage) error {
 	data, err := json.MarshalIndent(paths, "", "  ")
 	if err != nil {
-		return "", err
+		return err
 	}
 	f, err := os.CreateTemp(filepath.Dir(config), ".profiles-*.json")
 	if err != nil {
-		return "", fmt.Errorf("prepare profile list: %w", err)
+		return fmt.Errorf("prepare profile list: %w", err)
 	}
 	defer os.Remove(f.Name())
 	if _, err = f.Write(append(data, '\n')); err != nil {
 		f.Close()
-		return "", fmt.Errorf("write profile list: %w", err)
+		return fmt.Errorf("write profile list: %w", err)
 	}
 	if err = f.Sync(); err != nil {
 		f.Close()
-		return "", fmt.Errorf("save profile list: %w", err)
+		return fmt.Errorf("save profile list: %w", err)
 	}
 	if err = f.Close(); err != nil {
-		return "", err
+		return err
 	}
 	if err = ctx.Err(); err != nil {
-		return "", err
+		return err
 	}
 	if err = os.Rename(f.Name(), config); err != nil {
-		return "", fmt.Errorf("replace profile list: %w", err)
+		return fmt.Errorf("replace profile list: %w", err)
 	}
-	return dir, nil
+	return nil
 }

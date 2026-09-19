@@ -31,6 +31,7 @@ The dashboard shows account names, email addresses, the active login for each pr
 | --- | --- |
 | `a` | Add a Claude or Codex profile (Tab selects the provider) |
 | `c` | Edit configuration |
+| `d` | Select and remove a subscription from husage |
 | `r` | Refresh data |
 | `↑` / `↓`, `k` / `j` | Scroll |
 | Page Up / Page Down, Ctrl+B / Ctrl+F | Scroll a page |
@@ -74,6 +75,14 @@ Only after the command exits successfully does husage append the directory to `~
 Names accept 1–48 letters, numbers, dashes, or underscores and must start with a letter or number. Esc cancels the form; before execution this leaves no files behind. After an unsuccessful attempt, you can reuse the same name even after closing the form or restarting husage: an unregistered directory without credential files or saved account metadata can be reused, preserving its setup files. Registered profiles, directories containing credentials or account metadata, symbolic links, and invalid metadata are rejected when starting a new setup. New profile directories and the JSON file are created with owner-only permissions. The child login process uses its own `CLAUDE_CONFIG_DIR` or `CODEX_HOME` and clears inherited credential overrides, exactly as shown in the preview. The command runs directly without a shell.
 
 The action always saves to the default `~/.config/husage/profiles.json`, including when the current view was launched with `--profiles`, `--claude-dir`, or `--codex-home`. Those overrides continue to control future launches when explicitly supplied. Demo mode stays read-only and does not offer profile creation.
+
+## Remove a subscription
+
+Press **d**, use **↑ / ↓** (or **k / j**) to select a subscription, then press **Enter** to review and **Enter again** to confirm. **Esc** cancels. husage removes every profile currently represented by that card from the dashboard and its saved profile list. Native login directories, credentials, and usage caches are kept; removing a card does not log you out. Failed saves keep the subscription visible and allow retrying.
+
+Removal updates `~/.config/husage/profiles.json`, or the list selected with `--profiles`. Explicit `--claude-dir` and `--codex-home` flags can show a removed subscription again on a future launch; omit those flags to use the saved list. A profile supplied only through a flag is removed from the running dashboard without altering unrelated saved entries.
+
+When the last subscription for a provider is removed, husage saves a marker such as `{"provider":"codex","disabled":true}` to prevent automatic discovery on restart. New profiles added with **a** still work. To restore an existing login permanently, add its directory to the profile list (for example, `{"provider":"codex","directory":"current"}`); to resume automatic discovery, remove the marker while keeping the list a nonempty array.
 
 ## Show two subscriptions
 

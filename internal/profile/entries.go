@@ -10,7 +10,8 @@ import (
 // Legacy strings remain Claude profiles; typed entries identify other providers.
 type Entry struct {
 	Provider  string `json:"provider"`
-	Directory string `json:"directory"`
+	Directory string `json:"directory,omitempty"`
+	Disabled  bool   `json:"disabled,omitempty"`
 }
 
 func ParseEntries(data []byte) ([]Entry, error) {
@@ -29,6 +30,15 @@ func ParseEntries(data []byte) ([]Entry, error) {
 		}
 		if entry.Provider != "claude" && entry.Provider != "codex" {
 			return nil, errors.New("Profile provider must be claude or codex.")
+		}
+		// A provider marker prevents automatic discovery after its last
+		// subscription is removed. It is not a native login directory.
+		if entry.Disabled {
+			if entry.Directory != "" {
+				return nil, errors.New("Disabled provider entries cannot have a directory.")
+			}
+			entries = append(entries, entry)
+			continue
 		}
 		if entry.Directory != "current" && !filepath.IsAbs(entry.Directory) && !strings.HasPrefix(entry.Directory, "~/") {
 			return nil, errors.New("Profile directory must be absolute, start with ~/ or be current.")

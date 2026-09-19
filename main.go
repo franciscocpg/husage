@@ -68,6 +68,7 @@ func run(args []string, out io.Writer) error {
 	}
 	var provider subscription.Provider
 	var profileActions []*tui.ProfileActions
+	var removeActions *tui.RemoveActions
 	if *demo {
 		provider = subscription.Demo{}
 	} else {
@@ -93,6 +94,30 @@ func run(args []string, out io.Writer) error {
 				return dir, err
 			}})
 		codexStore := profile.Store{Home: home, Provider: "codex"}
+		removalPath := expand(*profilesPath, home)
+		shownPath := removalPath
+		if shownPath == "" {
+			shownPath = store.ConfigPath()
+		}
+		currentClaude := active.ConfigDir
+		if currentClaude == "" {
+			currentClaude = filepath.Join(home, ".claude")
+		}
+		currentCodex := expand(os.Getenv("CODEX_HOME"), home)
+		if currentCodex == "" {
+			currentCodex = filepath.Join(home, ".codex")
+		}
+		removeActions = &tui.RemoveActions{Path: shownPath, OverrideHint: len(dirs) > 0 || len(codexDirs) > 0,
+			Remove: func(ctx context.Context, a subscription.Account) error {
+				switch a.Provider {
+				case "Claude Code":
+					return group.Remove(a.ID, func(paths []string) error { return store.Remove(ctx, removalPath, currentClaude, paths) })
+				case "Codex":
+					return codexGroup.Remove(a.ID, func(paths []string) error { return codexStore.Remove(ctx, removalPath, currentCodex, paths) })
+				default:
+					return fmt.Errorf("Unsupported subscription provider")
+				}
+			}}
 		profileActions = append(profileActions, &tui.ProfileActions{Name: "Codex", Kind: "codex", Directory: codexStore.Directory, Command: codexcli.LoginCommand,
 			Login: func(ctx context.Context, name string) tea.ExecCommand { return profile.NewLogin(ctx, codexStore, name) },
 			Register: func(ctx context.Context, name string) (string, error) {
@@ -138,6 +163,7 @@ func run(args []string, out io.Writer) error {
 	}
 	model := tui.New(ctx, provider, interval, loc, *demo).
 		WithProfileProviders(profileActions).
+		WithRemoveActions(removeActions).
 		WithConfigActions(&tui.ConfigActions{Save: configStore.Save})
 	_, err = tea.NewProgram(model, tea.WithContext(ctx), tea.WithOutput(out)).Run()
 	if ctx.Err() != nil {

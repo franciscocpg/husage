@@ -95,3 +95,37 @@ func TestMixedProfilesAndCodexHomeOverride(t *testing.T) {
 		t.Fatal("accepted relative Codex home")
 	}
 }
+
+func TestRemovedProvidersDoNotReappearOnRestart(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", "")
+	t.Setenv("CODEX_HOME", "")
+	path := filepath.Join(home, "profiles.json")
+	os.WriteFile(path, []byte(`[{"provider":"claude","disabled":true},{"provider":"codex","disabled":true}]`), 0600)
+	_, claudeEntries, err := claudeProfiles(home, nil, path)
+	if err != nil || len(claudeEntries) != 0 {
+		t.Fatal("Claude rediscovered", claudeEntries, err)
+	}
+	codexEntries, err := codexProfiles(home, nil, path)
+	if err != nil || len(codexEntries) != 0 {
+		t.Fatal("Codex rediscovered", codexEntries, err)
+	}
+	_, claudeEntries, err = claudeProfiles(home, []string{"current"}, path)
+	if err != nil || len(claudeEntries) != 1 {
+		t.Fatal("explicit Claude flag ignored", err)
+	}
+	codexEntries, err = codexProfiles(home, []string{"current"}, path)
+	if err != nil || len(codexEntries) != 1 {
+		t.Fatal("explicit Codex flag ignored", err)
+	}
+	os.WriteFile(path, []byte(`[{"provider":"claude","disabled":true},{"provider":"claude","directory":"~/new"},{"provider":"codex","disabled":true},{"provider":"codex","directory":"~/new-codex"}]`), 0600)
+	_, claudeEntries, err = claudeProfiles(home, nil, path)
+	if err != nil || len(claudeEntries) != 1 || claudeEntries[0].ConfigDir != filepath.Join(home, "new") {
+		t.Fatal(claudeEntries, err)
+	}
+	codexEntries, err = codexProfiles(home, nil, path)
+	if err != nil || len(codexEntries) != 1 || codexEntries[0].Home != filepath.Join(home, "new-codex") {
+		t.Fatal(codexEntries, err)
+	}
+}
