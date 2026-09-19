@@ -118,7 +118,7 @@ func (m Model) bodyLines() []string {
 	if !m.loaded {
 		parts = append(parts, dim.Render("Reading your Claude subscriptions…"))
 	} else if len(m.accounts) == 0 && m.err == nil {
-		parts = append(parts, accent.Bold(true).Render("Your subscriptions, in one place."), "", dim.Width(w).Render("No Claude subscription found.\n\nOpen Claude Code and use /login, then press r.\n\nUse --claude-dir to read another Claude configuration."))
+		parts = append(parts, accent.Bold(true).Render("Your subscriptions, in one place."), "", dim.Width(w).Render("No Claude subscription found.\n\nOpen Claude Code and use /login, then press r.\n\nRepeat --claude-dir to monitor multiple Claude configurations."))
 	} else {
 		for _, a := range m.accounts {
 			parts = append(parts, renderAccount(a, w, m.location, m.now), "")

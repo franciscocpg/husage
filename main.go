@@ -33,7 +33,9 @@ func run(args []string, out io.Writer) error {
 	jsonOut := flags.Bool("json", false, "print subscription data as JSON and exit")
 	refresh := flags.Duration("refresh", 30*time.Second, "local refresh interval (minimum 5s; API requests at most once per 5m)")
 	zone := flags.String("timezone", "", "IANA timezone for reset times (default: system timezone)")
-	config := flags.String("claude-dir", os.Getenv("CLAUDE_CONFIG_DIR"), "Claude configuration directory")
+	var dirs profileDirs
+	flags.Var(&dirs, "claude-dir", "Claude configuration directory; repeat for multiple subscriptions, or use current")
+	profilesPath := flags.String("profiles", "", "JSON profile list (default: ~/.config/husage/profiles.json, if present)")
 	width := flags.Int("width", 80, "snapshot width (20–200 columns)")
 	if err := flags.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -62,7 +64,11 @@ func run(args []string, out io.Writer) error {
 	if *demo {
 		provider = subscription.Demo{}
 	} else {
-		provider = claude.New(claude.Options{Home: home, ConfigDir: expand(*config, home), SecureDir: expand(os.Getenv("CLAUDE_SECURESTORAGE_CONFIG_DIR"), home)})
+		active, profiles, err := claudeProfiles(home, dirs, *profilesPath)
+		if err != nil {
+			return err
+		}
+		provider = claude.NewProfiles(active, profiles)
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()

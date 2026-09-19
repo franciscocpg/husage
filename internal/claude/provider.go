@@ -49,15 +49,14 @@ func New(opts Options) *Provider {
 }
 
 func (p *Provider) Load(ctx context.Context) ([]subscription.Account, error) {
-	configPath := filepath.Join(p.opts.Home, ".claude.json")
-	if p.opts.ConfigDir != "" {
-		configPath = filepath.Join(p.opts.ConfigDir, ".claude.json")
-	}
-	id, err := readIdentity(configPath)
+	id, err := readIdentity(p.opts.identityPath())
 	if err != nil && !os.IsNotExist(err) {
 		return nil, errors.New("cannot read Claude account metadata")
 	}
 	if !id.valid() {
+		p.cached = nil
+		p.cachedID = ""
+		p.nextFetch = time.Time{}
 		return []subscription.Account{}, nil
 	}
 	return p.loadCurrent(ctx, id), nil

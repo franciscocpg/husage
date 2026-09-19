@@ -39,11 +39,39 @@ The dashboard shows account names, email addresses, the active Claude login, ses
 
 husage reads the current Claude account from `~/.claude.json`, obtains its existing OAuth login from macOS Keychain or `.credentials.json`, and makes a read-only request to `https://api.anthropic.com/api/oauth/usage`. This is an internal Claude endpoint, so its schema or availability can change. The parser supports both `seven_day_*` buckets and newer `limits[].kind = weekly_scoped` model caps, including Fable.
 
-The live dashboard currently shows the subscription for the selected Claude configuration. Use `--claude-dir` to select another configuration. The two-account demo uses sample data only.
+The live dashboard combines independently authenticated Claude configurations. Each configuration keeps its own credentials, usage cache, and refresh cooldown. Subscriptions sharing an email stay separate when their organization IDs differ. Duplicate configurations of the same subscription produce one card, and a missing or expired login does not hide other accounts. The subscription matching the current shell's Claude configuration appears first with the active badge.
 
-The direct provider requests usage at most once every five minutes per account during a run and honors longer `Retry-After` delays. Pressing `r` does not bypass this cooldown. Network failures preserve the last successful usage with a visible error. Data older than ten minutes is marked stale; a past reset is labeled rather than inventing fresh usage. Missing limits and reset times remain unavailable.
+The direct provider requests usage at most once every five minutes per configuration during a run and honors longer `Retry-After` delays. Pressing `r` does not bypass this cooldown. Network failures preserve the last successful usage with a visible error. Data older than ten minutes is marked stale; a past reset is labeled rather than inventing fresh usage. Missing limits and reset times remain unavailable.
 
 husage never switches accounts, runs inference, refreshes OAuth tokens, or writes credentials. If your login expires, open Claude Code to renew it, then restart husage. macOS may ask for access to the existing Keychain item. Credential storage follows [Claude Code's authentication documentation](https://code.claude.com/docs/en/authentication#credential-management).
+
+## Show two subscriptions
+
+Keep your existing Claude login, and log into your second subscription in a separate native configuration. Select the other subscription/organization during authentication:
+
+```sh
+env -u CLAUDE_SECURESTORAGE_CONFIG_DIR \
+  CLAUDE_CONFIG_DIR="$HOME/.claude-secondary" \
+  claude auth login --claudeai
+```
+
+Then show both in husage:
+
+```sh
+./bin/husage --claude-dir current --claude-dir "$HOME/.claude-secondary"
+```
+
+`current` follows `CLAUDE_CONFIG_DIR` and `CLAUDE_SECURESTORAGE_CONFIG_DIR` from your shell, falling back to Claude's default login. Every explicit directory uses its own native credential store; it does not inherit the shell's secure-store override. Use the same absolute directory string used for login, because Claude derives its macOS Keychain service name from that string.
+
+To make these profiles the default, create `~/.config/husage/profiles.json`:
+
+```json
+["current", "~/.claude-secondary"]
+```
+
+After that, just run `./bin/husage`. This file contains directory paths only. husage never copies or saves tokens. `--profiles /path/to/profiles.json` selects a different list, and explicit `--claude-dir` arguments override the list. The two-account demo remains entirely offline.
+
+For an expired secondary login, repeat its login command above or open Claude Code with that same `CLAUDE_CONFIG_DIR`, then restart husage.
 
 ## Options
 
@@ -53,6 +81,8 @@ husage never switches accounts, runs inference, refreshes OAuth tokens, or write
 ./bin/husage --timezone America/Sao_Paulo
 ./bin/husage --refresh 10s                  # Local polling; minimum 5 seconds
 ./bin/husage --claude-dir ~/.claude-work     # Select another Claude configuration
+./bin/husage --claude-dir current --claude-dir ~/.claude-secondary
+./bin/husage --profiles /path/to/profiles.json
 ./bin/husage --demo --once --width 60
 ```
 
@@ -67,4 +97,4 @@ go vet ./...
 
 The `internal/subscription.Provider` interface separates acquisition from rendering. Add another harness by implementing `Load(context.Context)` and returning account names, usage windows, timestamps, and source/error information. The Claude adapter lives in `internal/claude`; the Bubble Tea model lives in `internal/tui`.
 
-Tests cover native Claude account discovery, custom configuration selection, missing and malformed metadata, scoped model limits, failed responses, refresh cooldowns, rate-limit backoff, account isolation, terminal widths, scrolling, and timezone conversion. The UI has also been exercised in a real PTY for resize, refresh, scrolling, and clean terminal restoration.
+Tests cover native Claude account discovery, multiple organizations sharing an email, profile lists and overrides, credential isolation, partial failures, duplicate subscriptions, missing and malformed metadata, scoped model limits, refresh cooldowns, rate-limit backoff, terminal widths, scrolling, and timezone conversion. The UI has also been exercised in a real PTY for resize, refresh, scrolling, and clean terminal restoration.
