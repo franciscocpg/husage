@@ -30,7 +30,7 @@ func ValidateName(name string) error {
 	return nil
 }
 
-// Prepare creates only the new login directory, after the execution confirmation.
+// Prepare creates or reuses an unfinished login directory after confirmation.
 // The profile list remains unchanged until Register is called after login succeeds.
 func (s Store) Prepare(ctx context.Context, name string) (string, error) {
 	if err := ValidateName(name); err != nil {
@@ -48,11 +48,53 @@ func (s Store) Prepare(ctx context.Context, name string) (string, error) {
 	}
 	if err := os.Mkdir(dir, 0700); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			return "", errors.New("That directory already exists. Choose another profile name.")
+			if err := checkUnfinishedDirectory(dir); err != nil {
+				return "", err
+			}
+			return dir, nil
 		}
 		return "", fmt.Errorf("create profile directory: %w", err)
 	}
 	return dir, nil
+}
+
+// Claude creates configuration and cache files before authentication finishes.
+// Those files alone must not prevent a fresh attempt after closing the form or
+// restarting husage. Preserve directories with credentials or account metadata;
+// on macOS the credentials themselves may be stored outside the directory.
+func checkUnfinishedDirectory(dir string) error {
+	info, err := os.Lstat(dir)
+	if err != nil || !info.IsDir() {
+		return errors.New("That profile path is not a regular directory. Choose another profile name.")
+	}
+	if _, err := os.Lstat(filepath.Join(dir, ".credentials.json")); err == nil {
+		return errors.New("That directory already contains credentials; it was left unchanged. Choose another profile name.")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("check existing profile credentials: %w", err)
+	}
+	config := filepath.Join(dir, ".claude.json")
+	info, err = os.Lstat(config)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("check existing profile metadata: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("Existing profile metadata is not a regular file; it was left unchanged.")
+	}
+	data, err := os.ReadFile(config)
+	if err != nil {
+		return fmt.Errorf("read existing profile metadata: %w", err)
+	}
+	var metadata map[string]json.RawMessage
+	if err := json.Unmarshal(data, &metadata); err != nil || metadata == nil {
+		return errors.New("Existing profile metadata is invalid; it was left unchanged.")
+	}
+	if account := metadata["oauthAccount"]; len(account) != 0 && string(account) != "null" {
+		return errors.New("That directory already contains account metadata; it was left unchanged. Choose another profile name.")
+	}
+	return nil
 }
 
 func (s Store) readPaths(dir string) ([]string, error) {

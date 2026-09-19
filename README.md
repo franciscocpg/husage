@@ -30,11 +30,28 @@ The dashboard shows account names, email addresses, the active Claude login, ses
 | Key | Action |
 | --- | --- |
 | `a` | Add a Claude profile |
+| `c` | Edit configuration |
 | `r` | Refresh data |
 | `↑` / `↓`, `k` / `j` | Scroll |
 | Page Up / Page Down, Ctrl+B / Ctrl+F | Scroll a page |
 | Home / End, `g` / `G` | First / last account |
 | `q`, Esc, Ctrl+C | Quit |
+
+## Configuration
+
+The dashboard automatically reloads every **5 minutes** by default. On the first interactive launch, husage creates `~/.config/husage/config.json`:
+
+```json
+{
+  "refresh_interval": "5m"
+}
+```
+
+Press **c** to edit the auto-reload interval. Use a duration such as `30s`, `5m`, `10m`, or `1h` (minimum `5s`). **Ctrl+U** clears the field, **Enter** saves and applies the interval immediately, and **Esc** discards edits. The next automatic reload is scheduled from the time you save. Changes persist across restarts; manual edits to the file take effect on the next launch.
+
+`--refresh` overrides the saved interval for that launch without changing the file. Saving from the configuration screen replaces that override and persists the new value. Snapshot modes (`--once` and `--json`) do not create configuration files.
+
+Reloads remain subject to Claude's existing usage cache: API requests occur at most once every 5 minutes, even if the dashboard reloads more frequently.
 
 ## Where usage comes from
 
@@ -52,7 +69,7 @@ Press `a`, enter a profile name (for example, `personal`), and press Enter to pr
 
 Only after the command exits successfully does husage append the directory to `~/.config/husage/profiles.json` and add the profile to the dashboard. A failed or cancelled login returns to the confirmation screen without registering the profile; Enter retries the login. If login succeeds but saving the list fails, Enter retries only the save. Claude's files in the prepared directory are retained, including after a failed login, so credentials are never removed as part of error recovery.
 
-Names accept 1–48 letters, numbers, dashes, or underscores and must start with a letter or number. Esc cancels the form; before execution this leaves no files behind. Existing profiles are preserved; duplicate names and existing directories are rejected when starting a new setup. The profile directory and JSON file are created with owner-only permissions. The child login process uses its own `CLAUDE_CONFIG_DIR` and clears inherited credential overrides, exactly as shown in the preview. The command runs directly without a shell.
+Names accept 1–48 letters, numbers, dashes, or underscores and must start with a letter or number. Esc cancels the form; before execution this leaves no files behind. After an unsuccessful attempt, you can reuse the same name even after closing the form or restarting husage: an unregistered directory without credential files or saved account metadata can be reused, preserving its setup files. Registered profiles, directories containing credentials or account metadata, symbolic links, and invalid metadata are rejected when starting a new setup. New profile directories and the JSON file are created with owner-only permissions. The child login process uses its own `CLAUDE_CONFIG_DIR` and clears inherited credential overrides, exactly as shown in the preview. The command runs directly without a shell.
 
 The action always saves to the default `~/.config/husage/profiles.json`, including when the current view was launched with `--profiles` or `--claude-dir`. Those overrides continue to control future launches when explicitly supplied. Demo mode stays read-only and does not offer profile creation.
 

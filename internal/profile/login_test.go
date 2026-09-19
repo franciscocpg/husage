@@ -24,6 +24,7 @@ func TestLoginRunsClaudeWithIsolatedCredentialsAndCanRetry(t *testing.T) {
 [ -z "${ANTHROPIC_AUTH_TOKEN+x}" ] || exit 45
 printf '%s' "$CLAUDE_CONFIG_DIR" > "$HUSAGE_LOGIN_RECEIPT"
 printf 'fake login output'
+printf '{"installMethod":"native"}' > "$CLAUDE_CONFIG_DIR/.claude.json"
 exit "$HUSAGE_LOGIN_EXIT"
 `
 	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(script), 0700); err != nil {
@@ -54,6 +55,11 @@ exit "$HUSAGE_LOGIN_EXIT"
 	t.Setenv("HUSAGE_LOGIN_EXIT", "0")
 	if err := login.Run(); err != nil {
 		t.Fatal("retry failed", err)
+	}
+	// Closing the form or restarting the app creates a new runner. Setup files
+	// from the previous attempt must not force the user to pick a new name.
+	if err := NewLogin(context.Background(), s, "work").Run(); err != nil {
+		t.Fatal("retry with a fresh runner failed", err)
 	}
 	b, _ := os.ReadFile(receipt)
 	if string(b) != s.Directory("work") {

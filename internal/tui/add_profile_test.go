@@ -159,6 +159,56 @@ func TestLoginFailureDoesNotRegisterAndAllowsRetry(t *testing.T) {
 	}
 }
 
+func TestFailedLoginCanBeRetriedAfterReopeningForm(t *testing.T) {
+	m, s := profileModel(t)
+	loginFactory := m.profileActions.Login
+	m.profileActions.Login = func(ctx context.Context, name string) tea.ExecCommand {
+		return &fakeProfileLogin{run: func() error {
+			if _, err := s.Prepare(ctx, name); err != nil {
+				return err
+			}
+			return errors.New("cancelled login")
+		}}
+	}
+	m = nameProfile(m, "work")
+	m, _ = profileKey(m, tea.KeyEnter, "")
+	m, _ = profileKey(m, tea.KeyEnter, "")
+	next, save := m.Update(profileLoginFinishedMsg{err: m.profileLogin.Run()})
+	m = next.(Model)
+	if save != nil {
+		t.Fatal("failed login scheduled registration")
+	}
+	m, _ = profileKey(m, tea.KeyEscape, "")
+	m.profileActions.Login = loginFactory
+	m = nameProfile(m, "work")
+	m, _ = profileKey(m, tea.KeyEnter, "")
+	if m.profileLogin != nil {
+		t.Fatal("reopening reused old runner")
+	}
+	m, _ = profileKey(m, tea.KeyEnter, "")
+	if err := m.profileLogin.Run(); err != nil {
+		t.Fatal("leftover directory blocked retry", err)
+	}
+	if _, err := os.Stat(s.ConfigPath()); !os.IsNotExist(err) {
+		t.Fatal("registered before success callback")
+	}
+	next, save = m.Update(profileLoginFinishedMsg{})
+	m = next.(Model)
+	if save == nil {
+		t.Fatal("successful retry did not schedule registration")
+	}
+	next, _ = m.Update(save())
+	m = next.(Model)
+	if m.createdDirectory != s.Directory("work") || m.profileError != "" {
+		t.Fatal("retry did not save profile", m.profileError)
+	}
+	data, err := os.ReadFile(s.ConfigPath())
+	var paths []string
+	if err != nil || json.Unmarshal(data, &paths) != nil || len(paths) != 2 || paths[1] != s.Directory("work") {
+		t.Fatal("successful retry was not persisted", err)
+	}
+}
+
 func TestSaveFailureRetriesWithoutAnotherLoginAndQueuesRefresh(t *testing.T) {
 	m, _ := profileModel(t)
 	m.profileActions.Register = func(context.Context, string) (string, error) { return "", errors.New("disk full") }

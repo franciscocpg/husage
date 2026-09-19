@@ -147,6 +147,93 @@ func TestSaveFailureKeepsLoginFilesAndAllowsRetry(t *testing.T) {
 	}
 }
 
+func TestPrepareReusesUnfinishedDirectory(t *testing.T) {
+	for _, metadata := range []string{"", `{}`, `{"installMethod":"native","oauthAccount":null}`} {
+		t.Run(metadata, func(t *testing.T) {
+			s := Store{Home: t.TempDir()}
+			dir := s.Directory("work")
+			if err := os.MkdirAll(filepath.Join(dir, "debug"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			config := filepath.Join(dir, ".claude.json")
+			if metadata != "" {
+				if err := os.WriteFile(config, []byte(metadata), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := s.Prepare(context.Background(), "work")
+			if err != nil || got != dir {
+				t.Fatal("unfinished directory rejected", got, err)
+			}
+			if metadata != "" {
+				data, err := os.ReadFile(config)
+				if err != nil || string(data) != metadata {
+					t.Fatal("setup metadata changed", err)
+				}
+			}
+			if _, err := os.Stat(s.ConfigPath()); !os.IsNotExist(err) {
+				t.Fatal("retry registered before login")
+			}
+		})
+	}
+}
+
+func TestPreparePreservesExistingAccountOrInvalidMetadata(t *testing.T) {
+	for _, metadata := range []string{`{"oauthAccount":{"accountUuid":"existing"}}`, `{"oauthAccount":{}}`, `{`, `null`, `[]`} {
+		t.Run(metadata, func(t *testing.T) {
+			s := Store{Home: t.TempDir()}
+			if err := os.MkdirAll(s.Directory("work"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			config := filepath.Join(s.Directory("work"), ".claude.json")
+			if err := os.WriteFile(config, []byte(metadata), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.Prepare(context.Background(), "work"); err == nil {
+				t.Fatal("accepted existing account or invalid metadata")
+			}
+			data, err := os.ReadFile(config)
+			if err != nil || string(data) != metadata {
+				t.Fatal("existing metadata modified", err)
+			}
+		})
+	}
+}
+
+func TestPrepareRejectsExistingFileAndSymlinks(t *testing.T) {
+	for _, kind := range []string{"file", "directory link", "metadata link", "credentials link"} {
+		t.Run(kind, func(t *testing.T) {
+			s := Store{Home: t.TempDir()}
+			dir := s.Directory("work")
+			if err := os.MkdirAll(filepath.Dir(dir), 0700); err != nil {
+				t.Fatal(err)
+			}
+			var err error
+			switch kind {
+			case "file":
+				err = os.WriteFile(dir, []byte("existing"), 0600)
+			case "directory link":
+				err = os.Symlink(t.TempDir(), dir)
+			default:
+				if err = os.Mkdir(dir, 0700); err != nil {
+					t.Fatal(err)
+				}
+				name := ".claude.json"
+				if kind == "credentials link" {
+					name = ".credentials.json"
+				}
+				err = os.Symlink(filepath.Join(t.TempDir(), "missing"), filepath.Join(dir, name))
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.Prepare(context.Background(), "work"); err == nil {
+				t.Fatal("accepted", kind)
+			}
+		})
+	}
+}
+
 func TestSymlinkedConfigurationIsNotReplaced(t *testing.T) {
 	s := Store{Home: t.TempDir()}
 	os.MkdirAll(filepath.Dir(s.ConfigPath()), 0700)

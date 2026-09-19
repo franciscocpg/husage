@@ -15,6 +15,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/franciscocpg/husage/internal/claude"
+	"github.com/franciscocpg/husage/internal/config"
 	"github.com/franciscocpg/husage/internal/profile"
 	"github.com/franciscocpg/husage/internal/subscription"
 	"github.com/franciscocpg/husage/internal/tui"
@@ -32,7 +33,7 @@ func run(args []string, out io.Writer) error {
 	demo := flags.Bool("demo", false, "show sample subscriptions without accessing local accounts")
 	once := flags.Bool("once", false, "print a snapshot and exit")
 	jsonOut := flags.Bool("json", false, "print subscription data as JSON and exit")
-	refresh := flags.Duration("refresh", 30*time.Second, "local refresh interval (minimum 5s; API requests at most once per 5m)")
+	refresh := flags.Duration("refresh", config.DefaultRefresh, "override saved auto-reload interval for this launch (minimum 5s; API requests at most once per 5m)")
 	zone := flags.String("timezone", "", "IANA timezone for reset times (default: system timezone)")
 	var dirs profileDirs
 	flags.Var(&dirs, "claude-dir", "Claude configuration directory; repeat for multiple subscriptions, or use current")
@@ -102,7 +103,23 @@ func run(args []string, out io.Writer) error {
 		_, err = fmt.Fprintln(out, tui.Snapshot(accounts, *width, loc, time.Now()))
 		return err
 	}
-	model := tui.New(ctx, provider, *refresh, loc, *demo).WithProfileActions(profileActions)
+	configStore := config.Store{Home: home}
+	settings, err := configStore.Load()
+	if err != nil {
+		return err
+	}
+	interval, _ := settings.Interval()
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "refresh" {
+			interval = *refresh
+		}
+	})
+	if err := configStore.Ensure(ctx); err != nil {
+		return fmt.Errorf("initialize configuration: %w", err)
+	}
+	model := tui.New(ctx, provider, interval, loc, *demo).
+		WithProfileActions(profileActions).
+		WithConfigActions(&tui.ConfigActions{Save: configStore.Save})
 	_, err = tea.NewProgram(model, tea.WithContext(ctx), tea.WithOutput(out)).Run()
 	if ctx.Err() != nil {
 		return nil

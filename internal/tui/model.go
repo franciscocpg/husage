@@ -31,7 +31,10 @@ type resultMsg struct {
 	accounts []subscription.Account
 	err      error
 }
-type tickMsg time.Time
+type tickMsg struct {
+	at         time.Time
+	generation uint64
+}
 
 type Model struct {
 	provider                                   subscription.Provider
@@ -43,6 +46,7 @@ type Model struct {
 	demo                                       bool
 	width, height, offset                      int
 	refresh                                    time.Duration
+	tickGeneration                             uint64
 	location                                   *time.Location
 	now                                        time.Time
 	profileActions                             *ProfileActions
@@ -52,6 +56,11 @@ type Model struct {
 	profileError, createdDirectory             string
 	confirmProfile, loginSucceeded             bool
 	profileLogin                               tea.ExecCommand
+	configActions                              *ConfigActions
+	configOpen, savingConfig                   bool
+	configInput                                []rune
+	configCursor, configScroll                 int
+	configError                                string
 }
 
 func New(ctx context.Context, p subscription.Provider, refresh time.Duration, location *time.Location, demo bool) Model {
@@ -62,7 +71,7 @@ func (m Model) load() tea.Cmd {
 	return func() tea.Msg { a, e := m.provider.Load(m.ctx); return resultMsg{a, e} }
 }
 func (m Model) tick() tea.Cmd {
-	return tea.Tick(m.refresh, func(t time.Time) tea.Msg { return tickMsg(t) })
+	return tea.Tick(m.refresh, func(t time.Time) tea.Msg { return tickMsg{at: t, generation: m.tickGeneration} })
 }
 func (m Model) Init() tea.Cmd { return tea.Batch(m.load(), m.tick()) }
 
@@ -72,10 +81,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = max(1, msg.Width)
 		m.height = max(1, msg.Height)
 	case tea.KeyPressMsg:
+		if m.configOpen {
+			return m.updateConfigKey(msg)
+		}
 		if m.profileOpen {
 			return m.updateProfileKey(msg)
 		}
 		switch msg.String() {
+		case "c":
+			if m.configActions != nil {
+				m.configOpen = true
+				m.configInput = []rune(m.refresh.String())
+				m.configCursor = len(m.configInput)
+				m.configScroll = 0
+				m.configError = ""
+			}
 		case "a":
 			if m.profileActions != nil {
 				m.profileOpen = true
@@ -122,6 +142,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.load()
 		}
 	case tea.PasteMsg:
+		if m.configOpen && !m.savingConfig {
+			m.insertConfigText(msg.Content)
+			m.configScroll = 0
+			m.configError = ""
+		}
 		if m.profileOpen && !m.confirmProfile && !m.savingProfile && m.createdDirectory == "" {
 			m.insertProfileText(msg.Content)
 		}
@@ -149,8 +174,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.loading = true
 			return m, m.load()
 		}
+	case configSavedMsg:
+		m.savingConfig = false
+		if msg.err != nil {
+			m.configError = msg.err.Error()
+			m.configScroll = 1 << 20
+			return m, nil
+		}
+		m.refresh, _ = msg.settings.Interval()
+		m.configOpen = false
+		// A previous timer may still fire. Its generation must not reload or
+		// schedule another timer after the interval changes.
+		m.tickGeneration++
+		return m, m.tick()
 	case tickMsg:
-		m.now = time.Time(msg)
+		if msg.generation != m.tickGeneration {
+			return m, nil
+		}
+		m.now = msg.at
 		if !m.loading {
 			m.loading = true
 			return m, tea.Batch(m.load(), m.tick())
@@ -165,6 +206,9 @@ func (m Model) bodyHeight() int   { return max(1, m.height-7) }
 func (m Model) contentWidth() int { return max(1, min(90, m.width-4)) }
 
 func (m Model) bodyLines() []string {
+	if m.configOpen {
+		return m.configLines()
+	}
 	if m.profileOpen {
 		return m.profileLines()
 	}
@@ -197,6 +241,7 @@ func (m Model) View() tea.View {
 		status += "  ·  DEMO"
 	}
 	status += fmt.Sprintf("  ·  %d subscriptions", len(m.accounts))
+	status += "  ·  reload " + m.refresh.String()
 	if m.loading {
 		status += "  ·  refreshing…"
 	}
@@ -206,12 +251,18 @@ func (m Model) View() tea.View {
 	if m.profileOpen {
 		start = min(m.profileScroll, max(0, len(lines)-h))
 	}
+	if m.configOpen {
+		start = min(m.configScroll, max(0, len(lines)-h))
+	}
 	end := min(len(lines), start+h)
 	visible := append([]string{}, lines[start:end]...)
 	for len(visible) < h {
 		visible = append(visible, "")
 	}
 	footer := "r refresh   ↑↓ scroll   q quit"
+	if m.configActions != nil {
+		footer = "c config   " + footer
+	}
 	if m.profileActions != nil {
 		footer = "a add profile   " + footer
 	}
@@ -236,7 +287,16 @@ func (m Model) View() tea.View {
 			}
 		}
 	}
-	if len(lines) > h && !m.profileOpen {
+	if m.configOpen {
+		footer = "enter save   esc cancel"
+		if len(lines) > h {
+			footer += "   pg↑↓ scroll"
+		}
+		if m.savingConfig {
+			footer = "Saving configuration…"
+		}
+	}
+	if len(lines) > h && !m.profileOpen && !m.configOpen {
 		footer += fmt.Sprintf("   %d–%d/%d", start+1, end, len(lines))
 	}
 	content := []string{header, dim.Render(status), ""}
