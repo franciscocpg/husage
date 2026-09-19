@@ -91,7 +91,13 @@ func (m Model) removeLines() []string {
 		if a.Active {
 			parts = append(parts, dim.Render("Current native login"))
 		}
-		parts = append(parts, "", base.Render("Remove this subscription from husage?"), dim.Render("Native login, credentials, and usage cache will be kept."), "", dim.Render("Profile list: "+safe(m.removeActions.Path)))
+		parts = append(parts, "", base.Render("Remove this subscription from husage?"))
+		if a.Provider == "Claude Code" || a.Provider == "Codex" {
+			parts = append(parts, base.Foreground(amber).Render("Profiles under ~/.config/husage/claude or codex will be permanently deleted, including their files and credentials."), dim.Render("Default native homes and external profile directories will be kept."))
+		} else {
+			parts = append(parts, dim.Render("Native login and credentials will be kept."))
+		}
+		parts = append(parts, "", dim.Render("Profile list: "+safe(m.removeActions.Path)))
 		if m.removeActions.OverrideHint {
 			parts = append(parts, "", dim.Render("Explicit --claude-dir / --codex-home flags can show it again on a future launch."))
 		}

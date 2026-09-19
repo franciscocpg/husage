@@ -10,11 +10,11 @@ import (
 	"strings"
 )
 
-// Remove unregisters all directories backing a displayed subscription. Native
-// login directories, Keychain items, and usage caches are never modified.
+// Remove unregisters a subscription and deletes its husage-managed directories.
+// Default native homes, external directories, Keychain items, and usage caches are kept.
 // current is the resolved native configuration directory for this provider.
 func (s Store) Remove(ctx context.Context, path, current string, directories []string) error {
-	if s.Kind() != "claude" && s.Kind() != "codex" {
+	if s.Kind() != "claude" && s.Kind() != "codex" && s.Kind() != "cursor" {
 		return errors.New("Unsupported profile provider.")
 	}
 	if err := ctx.Err(); err != nil {
@@ -93,12 +93,21 @@ func (s Store) Remove(ctx context.Context, path, current string, directories []s
 		}
 		kept = append(kept, raw[i])
 	}
-	if !removed {
-		return nil
-	} // CLI-only profile; the flag remains an explicit override.
-	if remaining == 0 && !disabled {
+
+	if removed && remaining == 0 && !disabled {
 		marker, _ := json.Marshal(Entry{Provider: s.Kind(), Disabled: true})
 		kept = append(kept, marker)
 	}
-	return writePaths(ctx, path, kept)
+	staged, err := s.stageRemoval(ctx, path, targets)
+	if err != nil {
+		return err
+	}
+	if removed {
+		if err := writePaths(ctx, path, kept); err != nil {
+			return errors.Join(err, staged.restore())
+		}
+	} else if err := ctx.Err(); err != nil {
+		return errors.Join(err, staged.restore())
+	}
+	return staged.delete()
 }

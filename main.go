@@ -18,6 +18,7 @@ import (
 	"github.com/franciscocpg/husage/internal/codex"
 	"github.com/franciscocpg/husage/internal/codexcli"
 	"github.com/franciscocpg/husage/internal/config"
+	"github.com/franciscocpg/husage/internal/cursor"
 	"github.com/franciscocpg/husage/internal/profile"
 	"github.com/franciscocpg/husage/internal/subscription"
 	"github.com/franciscocpg/husage/internal/tui"
@@ -82,7 +83,12 @@ func run(args []string, out io.Writer) error {
 			return err
 		}
 		codexGroup := codex.NewProfiles(codexOptions)
-		provider = subscription.Combined{group, codexGroup}
+		cursorOptions, err := cursorProfile(home, *profilesPath)
+		if err != nil {
+			return err
+		}
+		cursorProvider := cursor.New(cursorOptions)
+		provider = subscription.Combined{group, codexGroup, cursorProvider}
 		store := profile.Store{Home: home}
 		profileActions = append(profileActions, &tui.ProfileActions{Directory: store.Directory,
 			Login: func(ctx context.Context, name string) tea.ExecCommand { return profile.NewLogin(ctx, store, name) },
@@ -94,6 +100,7 @@ func run(args []string, out io.Writer) error {
 				return dir, err
 			}})
 		codexStore := profile.Store{Home: home, Provider: "codex"}
+		cursorStore := profile.Store{Home: home, Provider: "cursor"}
 		removalPath := expand(*profilesPath, home)
 		shownPath := removalPath
 		if shownPath == "" {
@@ -114,6 +121,10 @@ func run(args []string, out io.Writer) error {
 					return group.Remove(a.ID, func(paths []string) error { return store.Remove(ctx, removalPath, currentClaude, paths) })
 				case "Codex":
 					return codexGroup.Remove(a.ID, func(paths []string) error { return codexStore.Remove(ctx, removalPath, currentCodex, paths) })
+				case "Cursor":
+					return cursorProvider.Remove(a.ID, func(paths []string) error {
+						return cursorStore.Remove(ctx, removalPath, cursor.NativeDirectory(home), paths)
+					})
 				default:
 					return fmt.Errorf("Unsupported subscription provider")
 				}
@@ -126,6 +137,14 @@ func run(args []string, out io.Writer) error {
 					codexGroup.Add(codex.Options{Home: dir})
 				}
 				return dir, err
+			}})
+		profileActions = append(profileActions, &tui.ProfileActions{Name: "Cursor", Kind: "cursor", Existing: true, ConfigPath: shownPath,
+			Register: func(ctx context.Context, _ string) (string, error) {
+				err := cursorProvider.Enable(ctx, func() error { return cursorStore.EnableCurrent(ctx, removalPath) })
+				if err != nil {
+					return "", err
+				}
+				return cursor.NativeDirectory(home), nil
 			}})
 	}
 	// Bubble Tea ignores parent terminal signals while a child owns the terminal,

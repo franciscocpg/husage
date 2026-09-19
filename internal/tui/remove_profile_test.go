@@ -100,3 +100,15 @@ func TestRemovalViewBoundsAndReadonlyDemo(t *testing.T) {
 		}
 	}
 }
+
+func TestRemovalExplainsManagedDirectoryDeletion(t *testing.T) {
+	for _, provider := range []string{"Claude Code", "Codex", "Cursor"} {
+		m := New(context.Background(), subscription.Demo{}, time.Minute, time.UTC, false).WithRemoveActions(&RemoveActions{Path: "/profiles.json"})
+		m.removeChoices = []subscription.Account{{Provider: provider, Name: "work"}}
+		m.removeConfirm = true
+		text := ansi.Strip(strings.Join(m.removeLines(), "\n"))
+		if strings.Contains(text, "permanently deleted") != (provider != "Cursor") {
+			t.Fatal("incorrect removal warning", text)
+		}
+	}
+}

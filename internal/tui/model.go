@@ -51,6 +51,8 @@ type Model struct {
 	now                                        time.Time
 	profileActions                             *ProfileActions
 	profileProviders                           []*ProfileActions
+	selectingProvider                          bool
+	providerIndex                              int
 	profileOpen, savingProfile, reloadAfterAdd bool
 	profileName                                []rune
 	profileCursor, profileScroll               int
@@ -115,6 +117,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "a":
 			if m.profileActions != nil {
 				m.profileOpen = true
+				m.selectingProvider = true
+				m.providerIndex = 0
 				m.profileName = nil
 				m.profileCursor = 0
 				m.profileScroll = 0
@@ -266,9 +270,9 @@ func (m Model) bodyLines() []string {
 	if !m.loaded {
 		parts = append(parts, dim.Render("Reading your subscriptions…"))
 	} else if len(m.accounts) == 0 && m.err == nil {
-		help := "No subscription found.\n\nSign in with Claude Code or Codex, then press r.\n\nUse --claude-dir or --codex-home for additional profiles."
+		help := "No subscription found.\n\nSign in with Claude Code, Codex or Cursor CLI, then press r.\n\nUse --claude-dir or --codex-home for additional profiles."
 		if m.profileActions != nil {
-			help = "No subscription found.\n\nPress a to add a Claude or Codex profile.\n\nAlready logged in? Press r to refresh."
+			help = "No subscription found.\n\nPress a to add a Claude, Codex or existing Cursor profile.\n\nAlready logged in? Press r to refresh."
 		}
 		parts = append(parts, accent.Bold(true).Render("Your subscriptions, in one place."), "", dim.Width(w).Render(help))
 	} else {
@@ -280,7 +284,7 @@ func (m Model) bodyLines() []string {
 func (m Model) View() tea.View {
 	w := m.contentWidth()
 	header := accent.Bold(true).Render("◈ husage") + dim.Render("  /  your coding subscriptions")
-	status := "Claude Code · Codex"
+	status := "Claude Code · Codex · Cursor"
 	if m.demo {
 		status += "  ·  DEMO"
 	}
@@ -318,9 +322,6 @@ func (m Model) View() tea.View {
 	}
 	if m.profileOpen {
 		footer = "enter review command   esc cancel"
-		if len(m.profileProviders) > 1 {
-			footer = "tab provider   enter review   esc cancel"
-		}
 		if m.confirmProfile {
 			footer = "enter execute login   esc cancel"
 		}
@@ -333,11 +334,23 @@ func (m Model) View() tea.View {
 		if m.createdDirectory != "" {
 			footer = "enter return to dashboard"
 		}
+		if m.profileActions.Existing && m.createdDirectory == "" {
+			footer = "enter review   esc cancel"
+			if m.confirmProfile {
+				footer = "enter add profile   esc cancel"
+			}
+			if m.savingProfile {
+				footer = "Adding existing account…"
+			}
+		}
 		if len(lines) > h && !m.savingProfile {
 			footer = "enter continue  esc cancel  pg↑↓ scroll"
 			if m.createdDirectory != "" {
 				footer = "enter done  pg↑↓ scroll"
 			}
+		}
+		if m.selectingProvider {
+			footer = "↑↓ select   enter continue   esc cancel"
 		}
 	}
 	if m.configOpen {
@@ -499,10 +512,10 @@ func renderBar(used float64, width int) string {
 	if math.IsNaN(used) || math.IsInf(used, 0) {
 		return dim.Render("Usage unavailable")
 	}
-	used = math.Max(0, math.Min(100, used))
+	used = math.Max(0, used)
 	label := fmt.Sprintf(" %3.0f%% used", used)
 	w := max(1, width-len(label))
-	filled := min(w, int(math.Round(used/100*float64(w))))
+	filled := min(w, int(math.Round(math.Min(100, used)/100*float64(w))))
 	color := purple
 	if used >= 90 {
 		color = red
@@ -561,10 +574,10 @@ func safe(s string) string {
 
 // Snapshot renders the same cards without starting an interactive terminal.
 func Snapshot(accounts []subscription.Account, width int, loc *time.Location, now time.Time) string {
-	parts := []string{accent.Bold(true).Render("◈ husage") + dim.Render("  /  Claude Code · Codex"), ""}
+	parts := []string{accent.Bold(true).Render("◈ husage") + dim.Render("  /  Claude Code · Codex · Cursor"), ""}
 	parts = append(parts, renderAccounts(accounts, max(20, width), loc, now))
 	if len(accounts) == 0 {
-		parts = append(parts, "No subscription found. Sign in with Claude Code or Codex.")
+		parts = append(parts, "No subscription found. Sign in with Claude Code, Codex or Cursor CLI.")
 	}
 	return strings.Join(parts, "\n")
 }

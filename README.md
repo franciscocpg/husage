@@ -1,12 +1,12 @@
 # husage
 
-A quiet, keyboard-driven dashboard for your Claude Code and Codex subscriptions. Built with [Bubble Tea v2](https://github.com/charmbracelet/bubbletea) and Lip Gloss.
+A quiet, keyboard-driven dashboard for your Claude Code, Codex, and Cursor subscriptions. Built with [Bubble Tea v2](https://github.com/charmbracelet/bubbletea) and Lip Gloss.
 
 ![husage showing two sample Claude subscriptions](docs/demo.png)
 
 ## Run
 
-Requires Go 1.25 or newer and a terminal. Install the native Claude and/or Codex CLI for the subscriptions you want to monitor.
+Requires Go 1.25 or newer and a terminal. Install the native Claude, Codex, or Cursor CLI for the subscriptions you want to monitor.
 
 ```sh
 go run .
@@ -29,7 +29,7 @@ The dashboard shows account names, email addresses, the active login for each pr
 
 | Key | Action |
 | --- | --- |
-| `a` | Add a Claude or Codex profile (Tab selects the provider) |
+| `a` | Add a Claude/Codex profile or restore the existing Cursor account (choose the provider first) |
 | `c` | Edit configuration |
 | `d` | Select and remove a subscription from husage |
 | `r` | Refresh data |
@@ -68,17 +68,19 @@ If a refresh token has expired or been revoked, or its saved scopes are missing,
 
 ## Add a profile in the TUI
 
-Press `a`, use **Tab** to select Claude or Codex, enter a profile name (for example, `personal`), and press Enter to preview the login command. Nothing is created or executed yet. Press Enter again to execute it: husage creates `~/.config/husage/claude/personal` or `~/.config/husage/codex/personal` and temporarily hands the terminal to `claude auth login --claudeai` or `codex login`. The command uses the new directory as `CLAUDE_CONFIG_DIR` or `CODEX_HOME`.
+For Claude and Codex, press `a`, choose the provider with **↑ / ↓** and press **Enter**, then enter a profile name (for example, `personal`), and press Enter to preview the login command. Nothing is created or executed yet. Press Enter again to execute it: husage creates `~/.config/husage/claude/personal` or `~/.config/husage/codex/personal` and temporarily hands the terminal to `claude auth login --claudeai` or `codex login`. The command uses the new directory as `CLAUDE_CONFIG_DIR` or `CODEX_HOME`.
 
 Only after the command exits successfully does husage append the directory to `~/.config/husage/profiles.json` and add the profile to the dashboard. A failed or cancelled login returns to the confirmation screen without registering the profile; Enter retries the login. If login succeeds but saving the list fails, Enter retries only the save. The native CLI's files in the prepared directory are retained, including after a failed login, so credentials are never removed as part of error recovery.
 
 Names accept 1–48 letters, numbers, dashes, or underscores and must start with a letter or number. Esc cancels the form; before execution this leaves no files behind. After an unsuccessful attempt, you can reuse the same name even after closing the form or restarting husage: an unregistered directory without credential files or saved account metadata can be reused, preserving its setup files. Registered profiles, directories containing credentials or account metadata, symbolic links, and invalid metadata are rejected when starting a new setup. New profile directories and the JSON file are created with owner-only permissions. The child login process uses its own `CLAUDE_CONFIG_DIR` or `CODEX_HOME` and clears inherited credential overrides, exactly as shown in the preview. The command runs directly without a shell.
 
-The action always saves to the default `~/.config/husage/profiles.json`, including when the current view was launched with `--profiles`, `--claude-dir`, or `--codex-home`. Those overrides continue to control future launches when explicitly supplied. Demo mode stays read-only and does not offer profile creation.
+Claude and Codex profile creation always saves to the default `~/.config/husage/profiles.json`, including when the current view was launched with `--profiles`, `--claude-dir`, or `--codex-home`. Those overrides continue to control future launches when explicitly supplied. Demo mode stays read-only and does not offer profile creation.
+
+For Cursor, press **a**, choose **Cursor** with **↑ / ↓** and press **Enter**, then press **Enter** to review and **Enter again** to add the existing CLI account. No profile name or new login is required. husage checks that native credentials exist, clears the Cursor disabled marker, and saves a `current` entry in the selected profile list (`--profiles`, if supplied, otherwise the default). The account returns immediately without restarting. If you are signed out, run `cursor-agent login` in another terminal and retry; failed checks or saves leave the list unchanged.
 
 ## Remove a subscription
 
-Press **d**, use **↑ / ↓** (or **k / j**) to select a subscription, then press **Enter** to review and **Enter again** to confirm. **Esc** cancels. husage removes every profile currently represented by that card from the dashboard and its saved profile list. Native login directories, credentials, and usage caches are kept; removing a card does not log you out. Failed saves keep the subscription visible and allow retrying.
+Press **d**, use **↑ / ↓** (or **k / j**) to select a subscription, then press **Enter** to review and **Enter again** to confirm. **Esc** cancels. husage removes every profile currently represented by that card from the dashboard and its saved profile list. For Claude and Codex, named profile directories under `~/.config/husage/claude/` and `~/.config/husage/codex/` are permanently deleted, including credentials and session files. You can then add the same name and log in again. Default native homes, externally supplied directories, Cursor’s shared login, Keychain items, and usage caches are kept. The confirmation screen explains the deletion. Failed saves restore staged directories and keep the subscription visible; directory cleanup failures show an error with the remaining path for retry.
 
 Removal updates `~/.config/husage/profiles.json`, or the list selected with `--profiles`. Explicit `--claude-dir` and `--codex-home` flags can show a removed subscription again on a future launch; omit those flags to use the saved list. A profile supplied only through a flag is removed from the running dashboard without altering unrelated saved entries.
 
@@ -122,7 +124,7 @@ The current Codex home is discovered automatically alongside your Claude profile
 ./bin/husage --codex-home current --codex-home "$HOME/.codex-work"
 ```
 
-To create another login, press **a**, select **Codex** with **Tab**, and follow the confirmation/login flow. To save homes that already exist, add typed entries to `~/.config/husage/profiles.json`, preserving your existing entries:
+To create another login, press **a**, select **Codex** with **↑ / ↓** and **Enter**, and follow the confirmation/login flow. To save homes that already exist, add typed entries to `~/.config/husage/profiles.json`, preserving your existing entries:
 
 ```json
 [
@@ -138,6 +140,28 @@ For Codex entries, `current` resolves `CODEX_HOME` from your shell, falling back
 Cards show the home name, ChatGPT plan, account email, usage percentages, and reset times. Windows are labeled using their reported duration; plans that only expose a weekly limit show only that limit. Additional metered buckets appear separately. Distinct account/workspace IDs remain separate even when the email matches. API-key and cloud-provider authentication do not expose ChatGPT subscription usage and show an explanation instead. Missing or failed homes do not hide healthy subscriptions.
 
 Codex polling is bounded to five minutes per home. Changes to file-based `auth.json` are detected on the next reload without reading or displaying token contents; keychain-only login changes are picked up on the next scheduled poll. App-server may update its normal native state/logs and renew credentials while serving these account requests. Its protocol is evolving; the integration was verified with Codex CLI 0.155.0.
+
+## Cursor subscriptions
+
+husage automatically discovers the **existing signed-in Cursor CLI account** and shows it in a Cursor section. If you have not logged into the CLI yet, run:
+
+```sh
+cursor-agent login
+```
+
+Then launch `./bin/husage` (or press **r** if it is already open). This uses the CLI login, not the Cursor editor's separate credential store. Browser login is described in [Cursor's authentication documentation](https://cursor.com/docs/cli/reference/authentication).
+
+On macOS, husage reads the native `cursor-access-token` Keychain item for `cursor-user`. File credentials use the native `auth.json`: `~/.cursor/` on macOS when `AGENT_CLI_CREDENTIAL_STORE=file`, `$XDG_CONFIG_HOME/cursor/` or `~/.config/cursor/` on Linux, and `%APPDATA%/Cursor/` on Windows. husage does not copy tokens or modify native credentials. Expired logins must be renewed by Cursor CLI; the card explains how to log in again.
+
+The adapter uses the same read-only `GetMe`, `GetCurrentPeriodUsage`, and `GetPlanInfo` RPCs used by Cursor CLI, via `api2.cursor.sh`. These are internal endpoints, verified against Cursor CLI `2026.09.15-d2fe57e`, and may change. No agent session is started, no inference is requested, and no billing setting is changed.
+
+Cards show the team/plan, included usage, Auto and API-model usage when reported, and the billing-cycle reset date. Cursor's reported percentages take precedence over spend/limit calculations because the usage pools may have different allowances. A fixed individual on-demand limit is shown when available. Unknown or unlimited budgets are not invented as percentage bars; plans without percentage-based limits show a message directing you to the Cursor dashboard.
+
+Usage is cached for five minutes, with longer server `Retry-After` delays respected. Successful usage is persisted under `~/.cache/husage/cursor/`, keyed by the verified user/team identity. A failed usage request can show this data with a stale warning. An initial identity request failure after restart cannot use the disk cache until the account is verified. A changed login clears the in-memory cache; signing out clears displayed usage.
+
+Use **d** to remove Cursor from husage while keeping its native login. To restore it, use **a → select Cursor → Enter → Enter → Enter**. You can also add `{"provider":"cursor","directory":"current"}` to your profile list. A `{"provider":"cursor","disabled":true}` marker suppresses automatic discovery until an explicit entry is added or the marker is removed.
+
+The **a** flow restores the current Cursor CLI account. Separate Cursor logins are not supported: `CURSOR_CONFIG_DIR` changes settings but does not isolate native credentials. Claude and Codex keep their existing multiple-profile flows.
 
 ## Options
 
@@ -162,6 +186,6 @@ make test
 go vet ./...
 ```
 
-The `internal/subscription.Provider` interface separates acquisition from rendering. Add another harness by implementing `Load(context.Context)` and returning account names, usage windows, timestamps, and source/error information. The adapters live in `internal/claude` and `internal/codex`; the Bubble Tea model lives in `internal/tui`.
+The `internal/subscription.Provider` interface separates acquisition from rendering. Add another harness by implementing `Load(context.Context)` and returning account names, usage windows, timestamps, and source/error information. The adapters live in `internal/claude`, `internal/codex`, and `internal/cursor`; the Bubble Tea model lives in `internal/tui`.
 
 Tests cover native Claude account discovery, multiple organizations sharing an email, profile lists and overrides, credential isolation, partial failures, duplicate subscriptions, missing and malformed metadata, scoped model limits, refresh cooldowns, rate-limit backoff, terminal widths, scrolling, and timezone conversion. The UI has also been exercised in a real PTY for resize, refresh, scrolling, and clean terminal restoration.

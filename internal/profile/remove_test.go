@@ -58,7 +58,7 @@ func TestRemoveSubscriptionPreservesNativeFilesAndOtherProfiles(t *testing.T) {
 }
 
 func TestRemoveDiscoveredDefaultAndExplicitList(t *testing.T) {
-	for _, provider := range []string{"claude", "codex"} {
+	for _, provider := range []string{"claude", "codex", "cursor"} {
 		t.Run(provider, func(t *testing.T) {
 			s := Store{Home: t.TempDir(), Provider: provider}
 			dir := filepath.Join(s.Home, "."+provider)

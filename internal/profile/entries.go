@@ -28,8 +28,8 @@ func ParseEntries(data []byte) ([]Entry, error) {
 				return nil, errors.New("Invalid profile entry.")
 			}
 		}
-		if entry.Provider != "claude" && entry.Provider != "codex" {
-			return nil, errors.New("Profile provider must be claude or codex.")
+		if entry.Provider != "claude" && entry.Provider != "codex" && entry.Provider != "cursor" {
+			return nil, errors.New("Profile provider must be claude, codex or cursor.")
 		}
 		// A provider marker prevents automatic discovery after its last
 		// subscription is removed. It is not a native login directory.

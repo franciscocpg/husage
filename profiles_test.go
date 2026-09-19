@@ -129,3 +129,26 @@ func TestRemovedProvidersDoNotReappearOnRestart(t *testing.T) {
 		t.Fatal(codexEntries, err)
 	}
 }
+
+func TestCursorCurrentProfileAndRemovalMarker(t *testing.T) {
+	home := t.TempDir()
+	opts, err := cursorProfile(home, "")
+	if err != nil || !opts.Optional || opts.Disabled {
+		t.Fatal(opts, err)
+	}
+	path := filepath.Join(home, "profiles.json")
+	os.WriteFile(path, []byte(`[{"provider":"cursor","directory":"current"}]`), 0600)
+	opts, err = cursorProfile(home, path)
+	if err != nil || opts.Optional || opts.Disabled {
+		t.Fatal(opts, err)
+	}
+	os.WriteFile(path, []byte(`[{"provider":"cursor","disabled":true}]`), 0600)
+	opts, err = cursorProfile(home, path)
+	if err != nil || !opts.Disabled {
+		t.Fatal(opts, err)
+	}
+	os.WriteFile(path, []byte(`[{"provider":"cursor","directory":"~/different-login"}]`), 0600)
+	if _, err = cursorProfile(home, path); err == nil {
+		t.Fatal("pretended settings directories isolate Cursor logins")
+	}
+}

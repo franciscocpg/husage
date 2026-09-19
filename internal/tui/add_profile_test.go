@@ -11,6 +11,7 @@ import (
 	"github.com/franciscocpg/husage/internal/profile"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -50,6 +51,7 @@ func profileKey(m Model, code rune, text string) (Model, tea.Cmd) {
 }
 func nameProfile(m Model, name string) Model {
 	m, _ = profileKey(m, 'a', "a")
+	m, _ = profileKey(m, tea.KeyEnter, "")
 	for _, r := range name {
 		m, _ = profileKey(m, r, string(r))
 	}
@@ -307,8 +309,12 @@ func TestAddCodexProfileRequiresConfirmationAndSuccessfulLogin(t *testing.T) {
 			return &fakeProfileLogin{run: func() error { _, err := store.Prepare(ctx, name); return err }}
 		}, Register: store.Register}
 	m = m.WithProfileProviders([]*ProfileActions{m.profileActions, codexActions})
-	m = nameProfile(m, "work")
-	m, _ = profileKey(m, tea.KeyTab, "")
+	m, _ = profileKey(m, 'a', "a")
+	m, _ = profileKey(m, tea.KeyDown, "")
+	m, _ = profileKey(m, tea.KeyEnter, "")
+	for _, r := range "work" {
+		m, _ = profileKey(m, r, string(r))
+	}
 	if m.profileActions != codexActions {
 		t.Fatal("provider selection failed")
 	}
@@ -350,5 +356,149 @@ func TestAddCodexProfileRequiresConfirmationAndSuccessfulLogin(t *testing.T) {
 	profiles, err := profile.ParseEntries(data)
 	if err != nil || profiles[len(profiles)-1].Provider != "codex" {
 		t.Fatal(profiles, err)
+	}
+}
+
+func TestAddExistingCursorRequiresConfirmationAndRestoresSavedList(t *testing.T) {
+	m, s := profileModel(t)
+	cursorStore := profile.Store{Home: s.Home, Provider: "cursor"}
+	os.MkdirAll(filepath.Dir(s.ConfigPath()), 0700)
+	original := `["current",{"provider":"cursor","disabled":true}]`
+	os.WriteFile(s.ConfigPath(), []byte(original), 0600)
+	calls := 0
+	failed := true
+	actions := &ProfileActions{Name: "Cursor", Kind: "cursor", Existing: true, ConfigPath: s.ConfigPath(), Register: func(ctx context.Context, _ string) (string, error) {
+		calls++
+		if failed {
+			return "", errors.New("No Cursor CLI login found. Run cursor-agent login, then retry.")
+		}
+		if err := cursorStore.EnableCurrent(ctx, ""); err != nil {
+			return "", err
+		}
+		return filepath.Join(s.Home, ".cursor"), nil
+	}}
+	m = m.WithProfileProviders([]*ProfileActions{m.profileActions, actions})
+	m, _ = profileKey(m, 'a', "a")
+	m, _ = profileKey(m, tea.KeyDown, "")
+	m, _ = profileKey(m, tea.KeyEnter, "")
+	m, _ = profileKey(m, 'x', "x")
+	if len(m.profileName) != 0 {
+		t.Fatal("Cursor requested a new profile name")
+	}
+	m, cmd := profileKey(m, tea.KeyEnter, "")
+	if cmd != nil || !m.confirmProfile || calls != 0 || m.profileLogin != nil {
+		t.Fatal("preview executed or required login")
+	}
+	view := ansi.Strip(strings.Join(m.profileLines(), "\n"))
+	if !strings.Contains(view, "existing Cursor account") || !strings.Contains(strings.ReplaceAll(view, "\n", ""), s.ConfigPath()) || strings.Contains(view, "Profile name") {
+		t.Fatal(view)
+	}
+	m, _ = profileKey(m, tea.KeyEscape, "")
+	data, _ := os.ReadFile(s.ConfigPath())
+	if string(data) != original {
+		t.Fatal("cancel changed saved profiles")
+	}
+	m, _ = profileKey(m, 'a', "a")
+	m, _ = profileKey(m, tea.KeyDown, "")
+	m, _ = profileKey(m, tea.KeyEnter, "")
+	m, _ = profileKey(m, tea.KeyEnter, "")
+	m, cmd = profileKey(m, tea.KeyEnter, "")
+	if cmd == nil || m.profileLogin != nil {
+		t.Fatal("existing account started a new login")
+	}
+	next, _ := m.Update(cmd())
+	m = next.(Model)
+	if m.savingProfile || m.createdDirectory != "" || m.profileError == "" {
+		t.Fatal("missing login incorrectly registered")
+	}
+	data, _ = os.ReadFile(s.ConfigPath())
+	if string(data) != original {
+		t.Fatal("failed add changed list")
+	}
+	failed = false
+	m.removed = map[string]bool{"Cursor\x00cursor:existing": true}
+	m, cmd = profileKey(m, tea.KeyEnter, "")
+	next, reload := m.Update(cmd())
+	m = next.(Model)
+	if m.createdDirectory == "" || reload == nil || len(m.removed) > 0 {
+		t.Fatal("restored profile did not refresh", m.profileError)
+	}
+	data, _ = os.ReadFile(s.ConfigPath())
+	entries, err := profile.ParseEntries(data)
+	if err != nil || len(entries) != 2 || entries[1].Disabled || entries[1].Directory != "current" {
+		t.Fatal(string(data), err)
+	}
+	if strings.Contains(ansi.Strip(strings.Join(m.profileLines(), "\n")), "login succeeded") {
+		t.Fatal("claimed a new login was performed")
+	}
+}
+
+func TestProviderSelectionPrecedesProfileForm(t *testing.T) {
+	for index, name := range []string{"Claude", "Codex", "Cursor"} {
+		t.Run(name, func(t *testing.T) {
+			m, s := profileModel(t)
+			providers := []*ProfileActions{m.profileActions,
+				{Name: "Codex", Kind: "codex", Directory: func(name string) string { return filepath.Join(s.Home, "codex", name) }},
+				{Name: "Cursor", Kind: "cursor", Existing: true},
+			}
+			m = m.WithProfileProviders(providers)
+			m, cmd := profileKey(m, 'a', "a")
+			if cmd != nil || !m.selectingProvider {
+				t.Fatal("a did not open provider selection")
+			}
+			view := ansi.Strip(m.View().Content)
+			for _, label := range []string{"Select a provider", "Claude", "Codex", "Cursor"} {
+				if !strings.Contains(view, label) {
+					t.Fatal("missing provider choice", view)
+				}
+			}
+			if strings.Contains(view, "Profile name") || strings.Contains(view, "Tab") {
+				t.Fatal("showed name form before selection", view)
+			}
+			next, _ := m.Update(tea.PasteMsg{Content: "unexpected-name"})
+			m = next.(Model)
+			m, _ = profileKey(m, 'x', "x")
+			if len(m.profileName) != 0 {
+				t.Fatal("selection collected profile input")
+			}
+			for i := 0; i < index; i++ {
+				m, _ = profileKey(m, tea.KeyDown, "")
+			}
+			m, cmd = profileKey(m, tea.KeyEnter, "")
+			if cmd != nil || m.selectingProvider || m.confirmProfile || m.profileLogin != nil || m.profileActions != providers[index] {
+				t.Fatal("selection did not open chosen form")
+			}
+			m, _ = profileKey(m, tea.KeyTab, "")
+			if m.profileActions != providers[index] {
+				t.Fatal("Tab changed selected provider")
+			}
+			m, _ = profileKey(m, tea.KeyEscape, "")
+			m, _ = profileKey(m, 'a', "a")
+			if !m.selectingProvider || m.providerIndex != 0 {
+				t.Fatal("reopen skipped provider selection")
+			}
+			m, _ = profileKey(m, tea.KeyUp, "")
+			if m.providerIndex != 0 {
+				t.Fatal("selection moved above first provider")
+			}
+			for i := 0; i < 5; i++ {
+				m, _ = profileKey(m, 'j', "j")
+			}
+			if m.providerIndex != 2 {
+				t.Fatal("selection moved below last provider")
+			}
+			m, _ = profileKey(m, 'k', "k")
+			if m.providerIndex != 1 {
+				t.Fatal("k did not select previous provider")
+			}
+			m, _ = profileKey(m, tea.KeyEscape, "")
+			if m.profileOpen {
+				t.Fatal("Escape did not cancel selection")
+			}
+			entries, _ := os.ReadDir(s.Home)
+			if len(entries) != 0 {
+				t.Fatal("selection or cancellation wrote files")
+			}
+		})
 	}
 }

@@ -13,10 +13,19 @@ import (
 // ProfileActions is optional: demo and read-only views never receive it.
 type ProfileActions struct {
 	Name, Kind string
+	Existing   bool // Restore the native login instead of creating a new one.
+	ConfigPath string
 	Directory  func(string) string
 	Command    func(string) string
 	Login      func(context.Context, string) tea.ExecCommand
 	Register   func(context.Context, string) (string, error)
+}
+
+func (a *ProfileActions) configPath() string {
+	if a.ConfigPath != "" {
+		return a.ConfigPath
+	}
+	return "~/.config/husage/profiles.json"
 }
 
 type profileLoginFinishedMsg struct{ err error }
@@ -28,6 +37,7 @@ type profileAddedMsg struct {
 
 func (m Model) WithProfileActions(actions *ProfileActions) Model {
 	m.profileActions = actions
+	m.profileProviders = []*ProfileActions{actions}
 	return m
 }
 
@@ -82,6 +92,24 @@ func (m Model) updateProfileKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.createdDirectory != "" {
 		return m, nil
 	}
+	if m.selectingProvider {
+		switch key {
+		case "up", "k":
+			m.providerIndex = max(0, m.providerIndex-1)
+		case "down", "j":
+			m.providerIndex = min(len(m.profileProviders)-1, m.providerIndex+1)
+		case "enter":
+			m.profileActions = m.profileProviders[m.providerIndex]
+			m.selectingProvider = false
+			m.profileScroll = 0
+			return m, nil
+		}
+		// Keep the highlighted provider visible in short terminals.
+		selectedLine := 3 + m.providerIndex
+		m.profileScroll = min(m.profileScroll, selectedLine)
+		m.profileScroll = max(m.profileScroll, selectedLine-m.bodyHeight()+1)
+		return m, nil
+	}
 	if m.confirmProfile {
 		if key != "enter" {
 			return m, nil
@@ -89,7 +117,7 @@ func (m Model) updateProfileKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.savingProfile = true
 		m.profileError = ""
 		m.profileScroll = 0
-		if m.loginSucceeded {
+		if m.loginSucceeded || m.profileActions.Existing {
 			return m, m.registerProfile()
 		}
 		if m.profileLogin == nil {
@@ -98,23 +126,9 @@ func (m Model) updateProfileKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Exec(m.profileLogin, func(err error) tea.Msg { return profileLoginFinishedMsg{err: err} })
 	}
 	switch key {
-	case "tab", "shift+tab":
-		if len(m.profileProviders) > 1 {
-			for i, actions := range m.profileProviders {
-				if actions == m.profileActions {
-					step := 1
-					if key == "shift+tab" {
-						step = len(m.profileProviders) - 1
-					}
-					m.profileActions = m.profileProviders[(i+step)%len(m.profileProviders)]
-					break
-				}
-			}
-			m.profileError = ""
-		}
 	case "enter":
 		name := string(m.profileName)
-		if err := profile.ValidateName(name); err != nil {
+		if err := profile.ValidateName(name); !m.profileActions.Existing && err != nil {
 			m.profileError = err.Error()
 			m.profileScroll = 1 << 20
 			return m, nil
@@ -158,6 +172,9 @@ func (m Model) registerProfile() tea.Cmd {
 }
 
 func (m *Model) insertProfileText(text string) {
+	if m.selectingProvider || (m.profileActions != nil && m.profileActions.Existing) {
+		return
+	}
 	for _, r := range text {
 		if unicode.IsControl(r) {
 			continue
@@ -177,8 +194,37 @@ func (m *Model) insertProfileText(text string) {
 func (m Model) profileLines() []string {
 	w := m.contentWidth()
 	var parts []string
-	if m.createdDirectory != "" {
-		parts = []string{base.Foreground(green).Bold(true).Render("✓ Profile added"), "", base.Render(m.profileActions.name() + " login succeeded."), "", dim.Render("Saved to ~/.config/husage/profiles.json"), "", base.Render(safe(m.createdDirectory)), "", dim.Render("Your dashboard is refreshing with the new profile.")}
+	if m.selectingProvider {
+		parts = []string{accent.Bold(true).Render("Add a profile"), dim.Render("Select a provider"), ""}
+		for i, actions := range m.profileProviders {
+			label := "  " + actions.name()
+			if i == m.providerIndex {
+				parts = append(parts, accent.Bold(true).Render("› "+actions.name()))
+			} else {
+				parts = append(parts, base.Render(label))
+			}
+		}
+	} else if m.createdDirectory != "" {
+		message := m.profileActions.name() + " login succeeded."
+		if m.profileActions.Existing {
+			message = "Your existing " + m.profileActions.name() + " account is enabled."
+		}
+		parts = []string{base.Foreground(green).Bold(true).Render("✓ Profile added"), "", base.Render(message), "", dim.Render("Saved to " + safe(m.profileActions.configPath())), "", base.Render(safe(m.createdDirectory)), "", dim.Render("Your dashboard is refreshing with the new profile.")}
+	} else if m.profileActions.Existing {
+		parts = []string{accent.Bold(true).Render("Add your existing " + m.profileActions.name() + " account"), ""}
+		if !m.confirmProfile {
+			parts = append(parts, dim.Render("Provider: "+m.profileActions.name()), "")
+		}
+		parts = append(parts, base.Render("Use the account already signed in to Cursor CLI."), dim.Render("Your native login and credentials will be kept."), "", dim.Render("Profile list:"), base.Render(safe(m.profileActions.configPath())), "")
+		if m.confirmProfile {
+			parts = append(parts, accent.Render("Press Enter to add this account to husage."))
+		} else {
+			parts = append(parts, dim.Render("Press Enter to review."))
+		}
+		parts = append(parts, "", dim.Render("If you are not signed in, run cursor-agent login, then retry."))
+		if m.savingProfile {
+			parts = append(parts, "", accent.Render("Adding existing account…"))
+		}
 	} else if m.confirmProfile {
 		parts = []string{accent.Bold(true).Render("Confirm " + m.profileActions.name() + " login"), "", dim.Render("Press Enter to execute this command:"), ""}
 		for _, line := range strings.Split(m.profileActions.command(m.profileActions.Directory(string(m.profileName))), "\n") {
@@ -205,7 +251,7 @@ func (m Model) profileLines() []string {
 		}
 		parts = []string{accent.Bold(true).Render("Add a " + m.profileActions.name() + " profile"), ""}
 		if len(m.profileProviders) > 1 {
-			parts = append(parts, dim.Render("Provider: "+m.profileActions.name()+" · Tab to change"), "")
+			parts = append(parts, dim.Render("Provider: "+m.profileActions.name()), "")
 		}
 		parts = append(parts, base.Bold(true).Render("Profile name"), input, "", dim.Render("Letters, numbers, dashes and underscores."), "", dim.Render("Profile directory:"), base.Render(safe(directory)), "", dim.Render("Next: review the login command."))
 	}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/franciscocpg/husage/internal/claude"
 	"github.com/franciscocpg/husage/internal/codex"
+	"github.com/franciscocpg/husage/internal/cursor"
 	"github.com/franciscocpg/husage/internal/profile"
 )
 
@@ -20,6 +21,20 @@ func (p *profileDirs) Set(value string) error {
 	}
 	*p = append(*p, value)
 	return nil
+}
+
+func cursorProfile(home, profilesPath string) (cursor.Options, error) {
+	dirs, err := savedDirectories(home, profilesPath, "cursor")
+	if err != nil {
+		return cursor.Options{}, err
+	}
+	opts := cursor.Options{Home: home, Optional: dirs == nil, Disabled: dirs != nil && len(dirs) == 0}
+	for _, dir := range dirs {
+		if dir != "current" && filepath.Clean(expand(dir, home)) != filepath.Clean(cursor.NativeDirectory(home)) {
+			return opts, fmt.Errorf("Cursor currently supports the existing native CLI login; use directory current")
+		}
+	}
+	return opts, nil
 }
 
 // Profile lists contain only directory paths; credentials remain in Claude's
