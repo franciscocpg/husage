@@ -24,11 +24,9 @@ import (
 const usageURL = "https://api.anthropic.com/api/oauth/usage"
 
 type Options struct {
-	Home        string
-	ConfigDir   string
-	SecureDir   string
-	SwitcherDir string
-	NoSwitcher  bool
+	Home      string
+	ConfigDir string
+	SecureDir string
 }
 
 type Provider struct {
@@ -58,30 +56,6 @@ func (p *Provider) Load(ctx context.Context) ([]subscription.Account, error) {
 	id, err := readIdentity(configPath)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, errors.New("cannot read Claude account metadata")
-	}
-	if !p.opts.NoSwitcher {
-		dir := p.opts.SwitcherDir
-		if dir == "" {
-			dir = filepath.Join(p.opts.Home, ".claude-switcher")
-		}
-		accounts, err := loadSwitcher(dir, id)
-		if err == nil && len(accounts) > 0 {
-			if id.valid() {
-				found := false
-				for _, a := range accounts {
-					if a.ID == id.key() {
-						found = true
-					}
-				}
-				if !found {
-					accounts = append(p.loadCurrent(ctx, id), accounts...)
-				}
-			}
-			return accounts, nil
-		}
-		if err != nil && !os.IsNotExist(err) {
-			return nil, errors.New("cannot read Claude switcher state; press r to retry")
-		}
 	}
 	if !id.valid() {
 		return []subscription.Account{}, nil

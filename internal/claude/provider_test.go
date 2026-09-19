@@ -106,44 +106,74 @@ func write(t *testing.T, path, body string) {
 	}
 }
 
-func TestSwitcherDiscoveryAndActiveAccount(t *testing.T) {
-	home := t.TempDir()
-	write(t, filepath.Join(home, ".claude.json"), `{"oauthAccount":{"accountUuid":"same-user","organizationUuid":"org-b"}}`)
-	path := filepath.Join(home, ".claude-switcher", "state.json")
-	write(t, path, `{"profiles":[{"name":"A","account_uuid":"same-user","org_id":"org-a"},{"name":"B","account_uuid":"same-user","org_id":"org-b"},{"name":"duplicate","account_uuid":"same-user","org_id":"org-b"}],"usage_cache":{"A":{"five_hour_pct":0,"checked_at":"2026-09-19T03:00:00Z","source":"inference"},"B":{"five_hour_pct":38,"seven_day_pct":48,"model_pct":63,"model_label":"Fable","model_reset_at":"2026-09-23T21:00:00Z","checked_at":"2026-09-19T03:00:00Z","source":"live"}}}`)
-	p := New(Options{Home: home})
-	p.readToken = func(context.Context) (string, error) { t.Fatal("switcher must not read credentials"); return "", nil }
-	a, err := p.Load(context.Background())
-	if err != nil || len(a) != 2 {
-		t.Fatalf("%+v %v", a, err)
-	}
-	if a[0].Name != "B" || !a[0].Active || a[1].Active || len(a[0].Windows) != 3 || a[1].Windows[0].Used != 0 {
-		t.Fatal(a)
-	}
-	write(t, path, `{"profiles":[{"name":"Missing","account_uuid":"u","org_id":"o"}]}`)
-	write(t, filepath.Join(home, ".claude.json"), `{}`)
-	a, err = p.Load(context.Background())
-	if err != nil || a[0].Error == "" || len(a[0].Windows) != 0 {
-		t.Fatal("missing data should not be zero usage")
-	}
-	write(t, path, `{`)
-	if _, err = p.Load(context.Background()); err == nil {
-		t.Fatal("malformed state accepted")
+func TestLoadNativeClaudeAccount(t *testing.T) {
+	for _, custom := range []bool{false, true} {
+		t.Run(fmt.Sprintf("custom=%t", custom), func(t *testing.T) {
+			home := t.TempDir()
+			opts := Options{Home: home}
+			path := filepath.Join(home, ".claude.json")
+			if custom {
+				opts.ConfigDir = filepath.Join(home, "work-config")
+				path = filepath.Join(opts.ConfigDir, ".claude.json")
+				write(t, filepath.Join(home, ".claude.json"), `{"oauthAccount":{"accountUuid":"other-user","organizationUuid":"other-org"}}`)
+			}
+			write(t, path, `{"oauthAccount":{"accountUuid":"user","organizationUuid":"org","organizationName":"Example Team","emailAddress":"you@example.com"}}`)
+			p := New(opts)
+			reads, calls := 0, 0
+			p.readToken = func(context.Context) (string, error) { reads++; return "test-token", nil }
+			p.client.Transport = transportFunc(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if r.Header.Get("Authorization") != "Bearer test-token" {
+					t.Fatal("missing native login")
+				}
+				return response(200, `{"five_hour":{"utilization":0},"seven_day":{"utilization":48}}`), nil
+			})
+			a, err := p.Load(context.Background())
+			if err != nil || len(a) != 1 {
+				t.Fatalf("accounts=%+v error=%v", a, err)
+			}
+			if a[0].ID != "user:org" || a[0].Name != "Example Team" || a[0].Email != "you@example.com" || !a[0].Active || a[0].Source != "Claude API" || a[0].Error != "" {
+				t.Fatal(a)
+			}
+			if len(a[0].Windows) != 2 || a[0].Windows[0].Used != 0 || a[0].Windows[1].Used != 48 || reads != 1 || calls != 1 {
+				t.Fatal("native usage not loaded")
+			}
+		})
 	}
 }
 
-func TestNoAccountAndUnknownActiveAccount(t *testing.T) {
+func TestMissingAndMalformedClaudeAccount(t *testing.T) {
 	home := t.TempDir()
 	p := New(Options{Home: home})
+	p.readToken = func(context.Context) (string, error) {
+		t.Fatal("credentials read without account identity")
+		return "", nil
+	}
 	a, err := p.Load(context.Background())
 	if err != nil || len(a) != 0 {
 		t.Fatal(a, err)
 	}
-	write(t, filepath.Join(home, ".claude.json"), `{"oauthAccount":{"accountUuid":"u","organizationUuid":"new"}}`)
-	write(t, filepath.Join(home, ".claude-switcher", "state.json"), `{"profiles":[{"name":"Saved","account_uuid":"u","org_id":"old"}]}`)
+	path := filepath.Join(home, ".claude.json")
+	for _, body := range []string{`{}`, `{"oauthAccount":{"accountUuid":"user"}}`} {
+		write(t, path, body)
+		a, err = p.Load(context.Background())
+		if err != nil || len(a) != 0 {
+			t.Fatal(a, err)
+		}
+	}
+	write(t, path, `{`)
+	if _, err = p.Load(context.Background()); err == nil {
+		t.Fatal("accepted malformed account metadata")
+	}
+}
+
+func TestNativeLoginFailureKeepsAccountVisible(t *testing.T) {
+	home := t.TempDir()
+	write(t, filepath.Join(home, ".claude.json"), `{"oauthAccount":{"accountUuid":"user","organizationUuid":"org"}}`)
+	p := New(Options{Home: home})
 	p.readToken = func(context.Context) (string, error) { return "", fmt.Errorf("login required") }
-	a, err = p.Load(context.Background())
-	if err != nil || len(a) != 2 || !a[0].Active || a[0].ID != "u:new" {
+	a, err := p.Load(context.Background())
+	if err != nil || len(a) != 1 || !a[0].Active || a[0].Error != "login required" || len(a[0].Windows) != 0 {
 		t.Fatal(a, err)
 	}
 }

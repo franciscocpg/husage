@@ -34,8 +34,6 @@ func run(args []string, out io.Writer) error {
 	refresh := flags.Duration("refresh", 30*time.Second, "local refresh interval (minimum 5s; API requests at most once per 5m)")
 	zone := flags.String("timezone", "", "IANA timezone for reset times (default: system timezone)")
 	config := flags.String("claude-dir", os.Getenv("CLAUDE_CONFIG_DIR"), "Claude configuration directory")
-	switcher := flags.String("switcher-dir", "", "Claude Switcher directory (default: ~/.claude-switcher)")
-	noSwitcher := flags.Bool("no-switcher", false, "read the current Claude login directly instead of switcher telemetry")
 	width := flags.Int("width", 80, "snapshot width (20–200 columns)")
 	if err := flags.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -64,7 +62,7 @@ func run(args []string, out io.Writer) error {
 	if *demo {
 		provider = subscription.Demo{}
 	} else {
-		provider = claude.New(claude.Options{Home: home, ConfigDir: expand(*config, home), SecureDir: expand(os.Getenv("CLAUDE_SECURESTORAGE_CONFIG_DIR"), home), SwitcherDir: expand(*switcher, home), NoSwitcher: *noSwitcher})
+		provider = claude.New(claude.Options{Home: home, ConfigDir: expand(*config, home), SecureDir: expand(os.Getenv("CLAUDE_SECURESTORAGE_CONFIG_DIR"), home)})
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
