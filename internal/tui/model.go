@@ -50,6 +50,8 @@ type Model struct {
 	profileName                                []rune
 	profileCursor, profileScroll               int
 	profileError, createdDirectory             string
+	confirmProfile, loginSucceeded             bool
+	profileLogin                               tea.ExecCommand
 }
 
 func New(ctx context.Context, p subscription.Provider, refresh time.Duration, location *time.Location, demo bool) Model {
@@ -82,6 +84,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.profileScroll = 0
 				m.profileError = ""
 				m.createdDirectory = ""
+				m.confirmProfile = false
+				m.loginSucceeded = false
+				m.profileLogin = nil
 			}
 		case "q", "ctrl+c", "esc":
 			return m, tea.Quit
@@ -117,9 +122,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.load()
 		}
 	case tea.PasteMsg:
-		if m.profileOpen && !m.savingProfile && m.createdDirectory == "" {
+		if m.profileOpen && !m.confirmProfile && !m.savingProfile && m.createdDirectory == "" {
 			m.insertProfileText(msg.Content)
 		}
+	case profileLoginFinishedMsg:
+		if msg.err != nil {
+			m.savingProfile = false
+			m.profileError = msg.err.Error()
+			m.profileScroll = 1 << 20
+			return m, nil
+		}
+		m.loginSucceeded = true
+		return m, m.registerProfile()
 	case profileAddedMsg:
 		m.savingProfile = false
 		if msg.err != nil {
@@ -202,15 +216,21 @@ func (m Model) View() tea.View {
 		footer = "a add profile   " + footer
 	}
 	if m.profileOpen {
-		footer = "enter create profile   esc cancel"
+		footer = "enter review command   esc cancel"
+		if m.confirmProfile {
+			footer = "enter execute login   esc cancel"
+		}
+		if m.loginSucceeded {
+			footer = "enter save profile   esc cancel"
+		}
 		if m.savingProfile {
-			footer = "Creating profile…"
+			footer = "Completing profile setup…"
 		}
 		if m.createdDirectory != "" {
 			footer = "enter return to dashboard"
 		}
 		if len(lines) > h && !m.savingProfile {
-			footer = "enter save  esc cancel  pg↑↓ scroll"
+			footer = "enter continue  esc cancel  pg↑↓ scroll"
 			if m.createdDirectory != "" {
 				footer = "enter done  pg↑↓ scroll"
 			}

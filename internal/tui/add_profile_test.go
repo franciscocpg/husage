@@ -1,140 +1,213 @@
 package tui
 
 import (
+	tea "charm.land/bubbletea/v2"
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/franciscocpg/husage/internal/claude"
+	"github.com/franciscocpg/husage/internal/profile"
+	"io"
 	"os"
 	"strings"
 	"testing"
 	"time"
-
-	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/ansi"
-	"github.com/franciscocpg/husage/internal/claude"
-	"github.com/franciscocpg/husage/internal/profile"
 )
+
+type fakeProfileLogin struct{ run func() error }
+
+func (f *fakeProfileLogin) Run() error          { return f.run() }
+func (f *fakeProfileLogin) SetStdin(io.Reader)  {}
+func (f *fakeProfileLogin) SetStdout(io.Writer) {}
+func (f *fakeProfileLogin) SetStderr(io.Writer) {}
 
 func profileModel(t *testing.T) (Model, profile.Store) {
 	t.Helper()
 	s := profile.Store{Home: t.TempDir()}
 	group := claude.NewProfiles(claude.Options{Home: s.Home}, []claude.Options{{Home: s.Home}})
-	m := New(context.Background(), group, time.Minute, time.UTC, false).WithProfileActions(&ProfileActions{Directory: s.Directory, Create: func(ctx context.Context, name string) (string, error) {
-		dir, err := s.Add(ctx, name)
-		if err == nil {
-			group.Add(claude.Options{Home: s.Home, ConfigDir: dir})
-		}
-		return dir, err
-	}})
+	m := New(context.Background(), group, time.Minute, time.UTC, false).WithProfileActions(&ProfileActions{
+		Directory: s.Directory,
+		Login: func(ctx context.Context, name string) tea.ExecCommand {
+			return &fakeProfileLogin{run: func() error { _, err := s.Prepare(ctx, name); return err }}
+		},
+		Register: func(ctx context.Context, name string) (string, error) {
+			dir, err := s.Register(ctx, name)
+			if err == nil {
+				group.Add(claude.Options{Home: s.Home, ConfigDir: dir})
+			}
+			return dir, err
+		},
+	})
 	m.loading = false
 	m.loaded = true
 	return m, s
 }
-
 func profileKey(m Model, code rune, text string) (Model, tea.Cmd) {
 	next, cmd := m.Update(tea.KeyPressMsg{Code: code, Text: text})
 	return next.(Model), cmd
 }
-
-func TestProfileFormCreatesAndRegistersOnlyOnSubmit(t *testing.T) {
-	m, s := profileModel(t)
+func nameProfile(m Model, name string) Model {
 	m, _ = profileKey(m, 'a', "a")
-	if !m.profileOpen {
-		t.Fatal("form did not open")
-	}
-	for _, r := range "work" {
+	for _, r := range name {
 		m, _ = profileKey(m, r, string(r))
 	}
-	if _, err := os.Stat(s.ConfigPath()); !os.IsNotExist(err) {
-		t.Fatal("typing wrote config")
-	}
+	return m
+}
+
+func TestProfileRequiresSecondEnterAndSuccessfulLoginBeforeRegistering(t *testing.T) {
+	m, s := profileModel(t)
+	m = nameProfile(m, "work")
 	m, cmd := profileKey(m, tea.KeyEnter, "")
-	if cmd == nil || !m.savingProfile {
-		t.Fatal("submit did not save")
+	if cmd != nil || !m.confirmProfile || m.savingProfile || m.profileLogin != nil {
+		t.Fatal("first Enter started execution")
+	}
+	view := ansi.Strip(m.View().Content)
+	if !strings.Contains(view, "Confirm Claude login") || !strings.Contains(view, "claude auth login") {
+		t.Fatal("command not previewed", view)
+	}
+	entries, _ := os.ReadDir(s.Home)
+	if len(entries) != 0 {
+		t.Fatal("preview wrote files")
+	}
+	m, cmd = profileKey(m, tea.KeyEnter, "")
+	if cmd == nil || !m.savingProfile || m.profileLogin == nil {
+		t.Fatal("second Enter did not schedule login")
 	}
 	_, duplicate := profileKey(m, tea.KeyEnter, "")
 	if duplicate != nil {
-		t.Fatal("duplicate save command")
+		t.Fatal("duplicate login command")
 	}
-	next, refresh := m.Update(cmd())
+	// Bubble Tea runs this command with the terminal released, then sends its exit result.
+	if err := m.profileLogin.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(s.ConfigPath()); !os.IsNotExist(err) {
+		t.Fatal("registered before successful exit callback")
+	}
+	next, save := m.Update(profileLoginFinishedMsg{})
+	m = next.(Model)
+	if save == nil || !m.loginSucceeded {
+		t.Fatal("success did not schedule registration")
+	}
+	next, refresh := m.Update(save())
 	m = next.(Model)
 	if m.createdDirectory != s.Directory("work") || m.savingProfile || refresh == nil {
-		t.Fatal("save did not refresh dashboard")
-	}
-	view := ansi.Strip(m.View().Content)
-	if !strings.Contains(view, "Profile added") || !strings.Contains(view, "claude auth login") {
-		t.Fatal("missing login instructions", view)
+		t.Fatal("profile not saved")
 	}
 	next, _ = m.Update(refresh())
 	m = next.(Model)
 	if len(m.accounts) != 2 || m.accounts[1].Name != "work" {
-		t.Fatal("new profile did not appear", m.accounts)
-	}
-	m, _ = profileKey(m, tea.KeyEnter, "")
-	if m.profileOpen {
-		t.Fatal("form did not close")
+		t.Fatal("profile not added to dashboard", m.accounts)
 	}
 	b, _ := os.ReadFile(s.ConfigPath())
 	var paths []string
 	if json.Unmarshal(b, &paths) != nil || len(paths) != 2 || paths[1] != s.Directory("work") {
 		t.Fatal("profile not persisted")
 	}
+	m, _ = profileKey(m, tea.KeyEnter, "")
+	if m.profileOpen {
+		t.Fatal("confirmation did not close")
+	}
 }
 
-func TestProfileFormCancelAndValidationDoNotWrite(t *testing.T) {
+func TestCancellingPreviewDoesNotExecuteOrWrite(t *testing.T) {
 	m, s := profileModel(t)
-	m, _ = profileKey(m, 'a', "a")
-	m, cmd := profileKey(m, tea.KeyEnter, "")
-	if cmd != nil || m.profileError == "" {
+	m = nameProfile(m, "work")
+	m, _ = profileKey(m, tea.KeyEnter, "")
+	m, cmd := profileKey(m, tea.KeyEscape, "")
+	if m.profileOpen || cmd != nil || m.profileLogin != nil {
+		t.Fatal("escape did not cancel preview")
+	}
+	entries, _ := os.ReadDir(s.Home)
+	if len(entries) != 0 {
+		t.Fatal("cancel wrote files")
+	}
+	m = nameProfile(m, "")
+	m, cmd = profileKey(m, tea.KeyEnter, "")
+	if cmd != nil || m.profileError == "" || m.confirmProfile {
 		t.Fatal("empty name accepted")
 	}
 	m, _ = profileKey(m, 'q', "q")
 	if string(m.profileName) != "q" {
 		t.Fatal("q quit instead of typing")
 	}
-	m, _ = profileKey(m, tea.KeyEscape, "")
-	if m.profileOpen {
-		t.Fatal("escape did not cancel")
+}
+
+func TestLoginFailureDoesNotRegisterAndAllowsRetry(t *testing.T) {
+	m, s := profileModel(t)
+	calls := 0
+	m.profileActions.Login = func(context.Context, string) tea.ExecCommand {
+		return &fakeProfileLogin{run: func() error { calls++; return errors.New("cancelled login") }}
 	}
-	entries, _ := os.ReadDir(s.Home)
-	if len(entries) != 0 {
-		t.Fatal("cancel created files")
+	m = nameProfile(m, "work")
+	m, _ = profileKey(m, tea.KeyEnter, "")
+	m, _ = profileKey(m, tea.KeyEnter, "")
+	err := m.profileLogin.Run()
+	next, save := m.Update(profileLoginFinishedMsg{err: err})
+	m = next.(Model)
+	if save != nil || m.loginSucceeded || m.savingProfile || !m.confirmProfile || m.profileError == "" {
+		t.Fatal("failed login saved or hid failure")
+	}
+	if _, err := os.Stat(s.ConfigPath()); !os.IsNotExist(err) {
+		t.Fatal("failed login registered")
+	}
+	same := m.profileLogin
+	m, cmd := profileKey(m, tea.KeyEnter, "")
+	if cmd == nil || m.profileLogin != same || calls != 1 {
+		t.Fatal("retry did not reuse prepared login")
 	}
 }
 
-func TestProfileFormFailureAndRefreshInFlight(t *testing.T) {
+func TestSaveFailureRetriesWithoutAnotherLoginAndQueuesRefresh(t *testing.T) {
 	m, _ := profileModel(t)
-	m.profileActions.Create = func(context.Context, string) (string, error) { return "", errors.New("disk full") }
-	m, _ = profileKey(m, 'a', "a")
-	m, _ = profileKey(m, 'x', "x")
-	m, cmd := profileKey(m, tea.KeyEnter, "")
-	next, _ := m.Update(cmd())
+	m.profileActions.Register = func(context.Context, string) (string, error) { return "", errors.New("disk full") }
+	m = nameProfile(m, "work")
+	m, _ = profileKey(m, tea.KeyEnter, "")
+	m, _ = profileKey(m, tea.KeyEnter, "")
+	next, save := m.Update(profileLoginFinishedMsg{})
 	m = next.(Model)
-	if !m.profileOpen || m.savingProfile || m.profileError != "disk full" {
-		t.Fatal("error not shown")
+	next, _ = m.Update(save())
+	m = next.(Model)
+	if !m.loginSucceeded || m.savingProfile || m.profileError != "disk full" {
+		t.Fatal("save error not shown")
+	}
+	m, save = profileKey(m, tea.KeyEnter, "")
+	if save == nil {
+		t.Fatal("save retry missing")
+	}
+	if _, ok := save().(profileAddedMsg); !ok {
+		t.Fatal("save retry started login again")
 	}
 	m.loading = true
-	next, cmd = m.Update(profileAddedMsg{directory: "/temporary/profile"})
+	next, cmd := m.Update(profileAddedMsg{directory: "/temporary/profile"})
 	m = next.(Model)
 	if cmd != nil || !m.reloadAfterAdd {
-		t.Fatal("overlapped in-flight refresh")
+		t.Fatal("overlapped refresh")
 	}
 	next, cmd = m.Update(resultMsg{})
 	m = next.(Model)
 	if cmd == nil || !m.loading || m.reloadAfterAdd {
-		t.Fatal("new profile refresh lost")
+		t.Fatal("refresh lost")
 	}
 }
 
-func TestProfileFormPasteEditingAndLayout(t *testing.T) {
+func TestProfileFormPasteEditingAndPreviewCannotBeEdited(t *testing.T) {
 	m, _ := profileModel(t)
-	m, _ = profileKey(m, 'a', "a")
+	m = nameProfile(m, "")
 	next, _ := m.Update(tea.PasteMsg{Content: "wok\n"})
 	m = next.(Model)
 	m, _ = profileKey(m, tea.KeyLeft, "")
 	m, _ = profileKey(m, 'r', "r")
 	if string(m.profileName) != "work" {
-		t.Fatal("paste/edit failed", string(m.profileName))
+		t.Fatal("paste/edit failed")
+	}
+	m, _ = profileKey(m, tea.KeyEnter, "")
+	next, _ = m.Update(tea.PasteMsg{Content: "other"})
+	m = next.(Model)
+	m, _ = profileKey(m, 'x', "x")
+	if string(m.profileName) != "work" {
+		t.Fatal("changed confirmed command")
 	}
 	for _, width := range []int{40, 60, 80} {
 		m.width = width
@@ -144,28 +217,25 @@ func TestProfileFormPasteEditingAndLayout(t *testing.T) {
 			}
 		}
 	}
-	command := loginCommand("/home/it's my/profile")
-	if !strings.Contains(command, `'"'"'`) {
-		t.Fatal("path not shell-quoted", command)
-	}
 }
 
-func TestProfileConfirmationScrollsInSmallTerminal(t *testing.T) {
+func TestLoginPreviewScrollsInSmallTerminal(t *testing.T) {
 	m, _ := profileModel(t)
-	m.profileOpen = true
-	m.createdDirectory = "/a/long/profile/directory/personal"
+	m = nameProfile(m, "personal")
+	m, _ = profileKey(m, tea.KeyEnter, "")
 	m.width = 40
 	m.height = 14
-	m, _ = profileKey(m, tea.KeyPgDown, "")
-	if m.profileScroll == 0 {
-		t.Fatal("confirmation cannot scroll")
+	for i := 0; i < 4; i++ {
+		m, _ = profileKey(m, tea.KeyPgDown, "")
 	}
-	if !strings.Contains(ansi.Strip(m.View().Content), "claude auth login") {
+	if m.profileScroll == 0 || !strings.Contains(ansi.Strip(m.View().Content), "claude auth login") {
 		t.Fatal("login command inaccessible", ansi.Strip(m.View().Content))
 	}
-	m, _ = profileKey(m, tea.KeyPgUp, "")
+	for i := 0; i < 4; i++ {
+		m, _ = profileKey(m, tea.KeyPgUp, "")
+	}
 	if m.profileScroll != 0 {
-		t.Fatal("cannot scroll back to confirmation title")
+		t.Fatal("cannot scroll back")
 	}
 }
 

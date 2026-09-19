@@ -13,8 +13,11 @@ import (
 // ProfileActions is optional: demo and read-only views never receive it.
 type ProfileActions struct {
 	Directory func(string) string
-	Create    func(context.Context, string) (string, error)
+	Login     func(context.Context, string) tea.ExecCommand
+	Register  func(context.Context, string) (string, error)
 }
+
+type profileLoginFinishedMsg struct{ err error }
 
 type profileAddedMsg struct {
 	directory string
@@ -50,6 +53,21 @@ func (m Model) updateProfileKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.createdDirectory != "" {
 		return m, nil
 	}
+	if m.confirmProfile {
+		if key != "enter" {
+			return m, nil
+		}
+		m.savingProfile = true
+		m.profileError = ""
+		m.profileScroll = 0
+		if m.loginSucceeded {
+			return m, m.registerProfile()
+		}
+		if m.profileLogin == nil {
+			m.profileLogin = m.profileActions.Login(m.ctx, string(m.profileName))
+		}
+		return m, tea.Exec(m.profileLogin, func(err error) tea.Msg { return profileLoginFinishedMsg{err: err} })
+	}
 	switch key {
 	case "enter":
 		name := string(m.profileName)
@@ -58,9 +76,10 @@ func (m Model) updateProfileKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.profileScroll = 1 << 20
 			return m, nil
 		}
-		m.savingProfile = true
+		m.confirmProfile = true
 		m.profileError = ""
-		return m, func() tea.Msg { dir, err := m.profileActions.Create(m.ctx, name); return profileAddedMsg{dir, err} }
+		m.profileScroll = 0
+		return m, nil
 	case "backspace":
 		if m.profileCursor > 0 {
 			m.profileName = append(m.profileName[:m.profileCursor-1], m.profileName[m.profileCursor:]...)
@@ -88,6 +107,13 @@ func (m Model) updateProfileKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) registerProfile() tea.Cmd {
+	return func() tea.Msg {
+		dir, err := m.profileActions.Register(m.ctx, string(m.profileName))
+		return profileAddedMsg{dir, err}
+	}
+}
+
 func (m *Model) insertProfileText(text string) {
 	for _, r := range text {
 		if unicode.IsControl(r) {
@@ -109,7 +135,19 @@ func (m Model) profileLines() []string {
 	w := m.contentWidth()
 	var parts []string
 	if m.createdDirectory != "" {
-		parts = []string{base.Foreground(green).Bold(true).Render("✓ Profile added"), "", dim.Render("Directory created and saved to"), dim.Render("~/.config/husage/profiles.json"), "", base.Render("Log in to this profile from your terminal:"), "", accent.Render(loginCommand(m.createdDirectory)), "", dim.Render("Then press r on the dashboard to load its usage.")}
+		parts = []string{base.Foreground(green).Bold(true).Render("✓ Profile added"), "", base.Render("Claude login succeeded."), "", dim.Render("Saved to ~/.config/husage/profiles.json"), "", base.Render(safe(m.createdDirectory)), "", dim.Render("Your dashboard is refreshing with the new profile.")}
+	} else if m.confirmProfile {
+		parts = []string{accent.Bold(true).Render("Confirm Claude login"), "", dim.Render("Press Enter to execute this command:"), ""}
+		for _, line := range strings.Split(profile.LoginCommand(m.profileActions.Directory(string(m.profileName))), "\n") {
+			parts = append(parts, accent.Render(line))
+		}
+		parts = append(parts, "", dim.Render("The profile is saved only after login succeeds."))
+		if m.loginSucceeded {
+			parts = append(parts, "", base.Foreground(green).Render("Login succeeded. Press Enter to retry saving."))
+		}
+		if m.savingProfile {
+			parts = append(parts, "", accent.Render("Completing profile setup…"))
+		}
 	} else {
 		name := string(m.profileName)
 		before := string(m.profileName[:m.profileCursor])
@@ -122,23 +160,14 @@ func (m Model) profileLines() []string {
 		if profile.ValidateName(name) == nil {
 			directory = m.profileActions.Directory(name)
 		}
-		parts = []string{accent.Bold(true).Render("Add a Claude profile"), "", base.Bold(true).Render("Profile name"), input, "", dim.Render("Letters, numbers, dashes and underscores."), "", dim.Render("Create directory:"), base.Render(safe(directory)), "", dim.Render("Save to ~/.config/husage/profiles.json")}
-		if m.savingProfile {
-			parts = append(parts, "", accent.Render("Creating profile…"))
-		} else if m.profileError != "" {
-			parts = append(parts, "", base.Foreground(amber).Render(safe(m.profileError)))
-		}
+		parts = []string{accent.Bold(true).Render("Add a Claude profile"), "", base.Bold(true).Render("Profile name"), input, "", dim.Render("Letters, numbers, dashes and underscores."), "", dim.Render("Profile directory:"), base.Render(safe(directory)), "", dim.Render("Next: review the login command.")}
+	}
+	if m.profileError != "" {
+		parts = append(parts, "", base.Foreground(amber).Render(safe(m.profileError)))
 	}
 	var lines []string
 	for _, part := range parts {
 		lines = append(lines, strings.Split(ansi.Hardwrap(part, w, true), "\n")...)
 	}
 	return lines
-}
-
-// Quote paths as literal shell arguments, including homes containing spaces or
-// quotes. This command is displayed only, never executed by husage.
-func loginCommand(dir string) string {
-	quoted := "'" + strings.ReplaceAll(dir, "'", "'\"'\"'") + "'"
-	return "env -u CLAUDE_SECURESTORAGE_CONFIG_DIR \\\n  CLAUDE_CONFIG_DIR=" + quoted + " \\\n  claude auth login --claudeai"
 }

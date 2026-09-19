@@ -44,13 +44,15 @@ The live dashboard combines independently authenticated Claude configurations. E
 
 The direct provider requests usage at most once every five minutes per configuration during a run and honors longer `Retry-After` delays. Pressing `r` does not bypass this cooldown. Network failures preserve the last successful usage with a visible error. Data older than ten minutes is marked stale; a past reset is labeled rather than inventing fresh usage. Missing limits and reset times remain unavailable.
 
-husage never switches accounts, runs inference, refreshes OAuth tokens, or writes credentials. If your login expires, open Claude Code to renew it, then restart husage. macOS may ask for access to the existing Keychain item. Credential storage follows [Claude Code's authentication documentation](https://code.claude.com/docs/en/authentication#credential-management).
+Usage polling never switches accounts, runs inference, or refreshes OAuth tokens. Profile creation delegates login to the Claude CLI after you confirm its command; Claude manages the credentials in its native store. If an existing login expires, open Claude Code to renew it, then restart husage. macOS may ask for access to the existing Keychain item. Credential storage follows [Claude Code's authentication documentation](https://code.claude.com/docs/en/authentication#credential-management).
 
 ## Add a profile in the TUI
 
-Press `a`, enter a profile name (for example, `personal`), and press Enter. husage creates `~/.config/husage/claude/personal` and appends its absolute path to `~/.config/husage/profiles.json`. The new profile appears in the current dashboard immediately, awaiting login. The confirmation screen shows the exact Claude login command for its directory.
+Press `a`, enter a profile name (for example, `personal`), and press Enter to preview the login command. Nothing is created or executed yet. Press Enter again to execute it: husage creates `~/.config/husage/claude/personal` and temporarily hands the terminal to `claude auth login --claudeai` so you can complete authentication.
 
-Names accept 1–48 letters, numbers, dashes, or underscores and must start with a letter or number. The form previews the directory before saving. Esc cancels without writing anything. Existing profiles are preserved; duplicate names and existing directories are rejected. The profile directory and JSON file are created with owner-only permissions.
+Only after the command exits successfully does husage append the directory to `~/.config/husage/profiles.json` and add the profile to the dashboard. A failed or cancelled login returns to the confirmation screen without registering the profile; Enter retries the login. If login succeeds but saving the list fails, Enter retries only the save. Claude's files in the prepared directory are retained, including after a failed login, so credentials are never removed as part of error recovery.
+
+Names accept 1–48 letters, numbers, dashes, or underscores and must start with a letter or number. Esc cancels the form; before execution this leaves no files behind. Existing profiles are preserved; duplicate names and existing directories are rejected when starting a new setup. The profile directory and JSON file are created with owner-only permissions. The child login process uses its own `CLAUDE_CONFIG_DIR` and clears inherited credential overrides, exactly as shown in the preview. The command runs directly without a shell.
 
 The action always saves to the default `~/.config/husage/profiles.json`, including when the current view was launched with `--profiles` or `--claude-dir`. Those overrides continue to control future launches when explicitly supplied. Demo mode stays read-only and does not offer profile creation.
 

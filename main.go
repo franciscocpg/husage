@@ -73,17 +73,23 @@ func run(args []string, out io.Writer) error {
 		group := claude.NewProfiles(active, profiles)
 		provider = group
 		store := profile.Store{Home: home}
-		profileActions = &tui.ProfileActions{Directory: store.Directory, Create: func(ctx context.Context, name string) (string, error) {
-			dir, err := store.Add(ctx, name)
-			if err == nil {
-				group.Add(claude.Options{Home: home, ConfigDir: dir})
-			}
-			return dir, err
-		}}
+		profileActions = &tui.ProfileActions{Directory: store.Directory,
+			Login: func(ctx context.Context, name string) tea.ExecCommand { return profile.NewLogin(ctx, store, name) },
+			Register: func(ctx context.Context, name string) (string, error) {
+				dir, err := store.Register(ctx, name)
+				if err == nil {
+					group.Add(claude.Options{Home: home, ConfigDir: dir})
+				}
+				return dir, err
+			}}
 	}
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	// Bubble Tea ignores parent terminal signals while a child owns the terminal,
+	// so cancelling login with Ctrl+C returns to the form instead of quitting us.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if *once || *jsonOut {
+		ctx, stop := signal.NotifyContext(ctx, os.Interrupt)
+		defer stop()
 		accounts, err := provider.Load(ctx)
 		if err != nil {
 			return err

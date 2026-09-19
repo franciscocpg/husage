@@ -30,55 +30,17 @@ func ValidateName(name string) error {
 	return nil
 }
 
-// Add is called only after a user submits the form. It creates a fresh native
-// config directory and atomically appends its path, without touching credentials.
-func (s Store) Add(ctx context.Context, name string) (string, error) {
+// Prepare creates only the new login directory, after the execution confirmation.
+// The profile list remains unchanged until Register is called after login succeeds.
+func (s Store) Prepare(ctx context.Context, name string) (string, error) {
 	if err := ValidateName(name); err != nil {
 		return "", err
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	config := s.ConfigPath()
-	if err := os.MkdirAll(filepath.Dir(config), 0700); err != nil {
-		return "", fmt.Errorf("create husage configuration directory: %w", err)
-	}
-	lock, err := os.OpenFile(config+".lock", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if errors.Is(err, os.ErrExist) {
-		return "", errors.New("The profile list is locked by another save. Retry after it finishes.")
-	}
-	if err != nil {
-		return "", fmt.Errorf("lock profile list: %w", err)
-	}
-	defer func() { lock.Close(); os.Remove(config + ".lock") }()
-	if info, err := os.Lstat(config); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return "", errors.New("The profile list is a symbolic link; it was left unchanged.")
-	}
-	data, err := os.ReadFile(config)
-	paths := []string{"current"}
-	if err == nil {
-		if json.Unmarshal(data, &paths) != nil || len(paths) == 0 {
-			return "", errors.New("The existing profile list is invalid; it was left unchanged.")
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", fmt.Errorf("read profile list: %w", err)
-	}
 	dir := s.Directory(name)
-	for _, p := range paths {
-		if p == "current" {
-			continue
-		}
-		if strings.HasPrefix(p, "~/") {
-			p = filepath.Join(s.Home, p[2:])
-		}
-		if !filepath.IsAbs(p) {
-			return "", errors.New("The existing profile list contains an invalid directory; it was left unchanged.")
-		}
-		if filepath.Clean(p) == dir {
-			return "", errors.New("A profile with this directory is already registered. Choose another name.")
-		}
-	}
-	if err := ctx.Err(); err != nil {
+	if _, err := s.readPaths(dir); err != nil {
 		return "", err
 	}
 	if err := os.MkdirAll(filepath.Dir(dir), 0700); err != nil {
@@ -90,14 +52,69 @@ func (s Store) Add(ctx context.Context, name string) (string, error) {
 		}
 		return "", fmt.Errorf("create profile directory: %w", err)
 	}
-	saved := false
-	defer func() {
-		if !saved {
-			os.Remove(dir)
+	return dir, nil
+}
+
+func (s Store) readPaths(dir string) ([]string, error) {
+	config := s.ConfigPath()
+	if info, err := os.Lstat(config); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return nil, errors.New("The profile list is a symbolic link; it was left unchanged.")
+	}
+	data, err := os.ReadFile(config)
+	paths := []string{"current"}
+	if err == nil {
+		if json.Unmarshal(data, &paths) != nil || len(paths) == 0 {
+			return nil, errors.New("The existing profile list is invalid; it was left unchanged.")
 		}
-	}() // Only our new, still-empty directory.
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("read profile list: %w", err)
+	}
+	for _, p := range paths {
+		if p == "current" {
+			continue
+		}
+		if strings.HasPrefix(p, "~/") {
+			p = filepath.Join(s.Home, p[2:])
+		}
+		if !filepath.IsAbs(p) {
+			return nil, errors.New("The existing profile list contains an invalid directory; it was left unchanged.")
+		}
+		if filepath.Clean(p) == dir {
+			return nil, errors.New("A profile with this directory is already registered. Choose another name.")
+		}
+	}
+	return paths, nil
+}
+
+// Register atomically appends a prepared profile after successful authentication.
+// It rereads the list under a short lock, preserving profiles added during login.
+func (s Store) Register(ctx context.Context, name string) (string, error) {
+	if err := ValidateName(name); err != nil {
+		return "", err
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	dir := s.Directory(name)
+	info, err := os.Lstat(dir)
+	if err != nil || !info.IsDir() {
+		return "", errors.New("The login directory is missing or no longer a directory.")
+	}
+	config := s.ConfigPath()
+	lock, err := os.OpenFile(config+".lock", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if errors.Is(err, os.ErrExist) {
+		return "", errors.New("The profile list is locked by another save. Retry after it finishes.")
+	}
+	if err != nil {
+		return "", fmt.Errorf("lock profile list: %w", err)
+	}
+	defer func() { lock.Close(); os.Remove(config + ".lock") }()
+	paths, err := s.readPaths(dir)
+	if err != nil {
+		return "", err
+	}
 	paths = append(paths, dir)
-	data, err = json.MarshalIndent(paths, "", "  ")
+	data, err := json.MarshalIndent(paths, "", "  ")
 	if err != nil {
 		return "", err
 	}
@@ -123,6 +140,5 @@ func (s Store) Add(ctx context.Context, name string) (string, error) {
 	if err = os.Rename(f.Name(), config); err != nil {
 		return "", fmt.Errorf("replace profile list: %w", err)
 	}
-	saved = true
 	return dir, nil
 }
