@@ -250,3 +250,57 @@ func TestSymlinkedConfigurationIsNotReplaced(t *testing.T) {
 		t.Fatal("replaced existing link")
 	}
 }
+
+func TestCodexRegistrationPreservesClaudeAndCurrentCodex(t *testing.T) {
+	claudeStore := Store{Home: t.TempDir()}
+	codexStore := Store{Home: claudeStore.Home, Provider: "codex"}
+	ctx := context.Background()
+	for _, s := range []Store{claudeStore, codexStore} {
+		if _, err := s.Prepare(ctx, "work"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Register(ctx, "work"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := os.ReadFile(claudeStore.ConfigPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := ParseEntries(data)
+	if err != nil || len(entries) != 4 || entries[0].Provider != "claude" || entries[1].Directory != claudeStore.Directory("work") || entries[2] != (Entry{Provider: "codex", Directory: "current"}) || entries[3].Directory != codexStore.Directory("work") {
+		t.Fatal(entries, err)
+	}
+	if _, err := codexStore.Prepare(ctx, "work"); err == nil {
+		t.Fatal("duplicate Codex profile accepted")
+	}
+	if _, err := claudeStore.Prepare(ctx, "personal"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := claudeStore.Register(ctx, "personal"); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(claudeStore.ConfigPath())
+	entries, err = ParseEntries(data)
+	if err != nil || len(entries) != 5 || entries[3].Provider != "codex" {
+		t.Fatal("Claude registration lost Codex entries", entries, err)
+	}
+}
+
+func TestCodexAuthFileIsNotOverwritten(t *testing.T) {
+	s := Store{Home: t.TempDir(), Provider: "codex"}
+	if err := os.MkdirAll(s.Directory("work"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(s.Directory("work"), "auth.json")
+	if err := os.WriteFile(path, []byte(`{"tokens":"fake credentials"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Prepare(context.Background(), "work"); err == nil {
+		t.Fatal("accepted directory with existing credentials")
+	}
+	data, _ := os.ReadFile(path)
+	if string(data) != `{"tokens":"fake credentials"}` {
+		t.Fatal("existing authentication modified")
+	}
+}

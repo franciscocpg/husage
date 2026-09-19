@@ -77,6 +77,7 @@ func (g *Profiles) Load(ctx context.Context) ([]subscription.Account, error) {
 			}
 			if err != nil {
 				a.Error = err.Error()
+				a.Stale = len(a.Windows) > 0
 			} else {
 				// A logged-out profile must not retain the previous account's usage.
 				delete(g.last, p)

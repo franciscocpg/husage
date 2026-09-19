@@ -50,6 +50,7 @@ type Model struct {
 	location                                   *time.Location
 	now                                        time.Time
 	profileActions                             *ProfileActions
+	profileProviders                           []*ProfileActions
 	profileOpen, savingProfile, reloadAfterAdd bool
 	profileName                                []rune
 	profileCursor, profileScroll               int
@@ -202,8 +203,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) bodyHeight() int   { return max(1, m.height-7) }
-func (m Model) contentWidth() int { return max(1, min(90, m.width-4)) }
+func (m Model) bodyHeight() int { return max(1, m.height-7) }
+func (m Model) contentWidth() int {
+	w := max(1, m.width-4)
+	if m.profileOpen || m.configOpen {
+		return min(90, w)
+	}
+	return w
+}
 
 func (m Model) bodyLines() []string {
 	if m.configOpen {
@@ -218,17 +225,15 @@ func (m Model) bodyLines() []string {
 		parts = append(parts, base.Foreground(amber).Width(w).Render("Unable to refresh · "+safe(m.err.Error())+"\nShowing the last successful read, if available.\n"))
 	}
 	if !m.loaded {
-		parts = append(parts, dim.Render("Reading your Claude subscriptions…"))
+		parts = append(parts, dim.Render("Reading your subscriptions…"))
 	} else if len(m.accounts) == 0 && m.err == nil {
-		help := "No Claude subscription found.\n\nOpen Claude Code and use /login, then press r.\n\nRepeat --claude-dir to monitor multiple Claude configurations."
+		help := "No subscription found.\n\nSign in with Claude Code or Codex, then press r.\n\nUse --claude-dir or --codex-home for additional profiles."
 		if m.profileActions != nil {
-			help = "No Claude subscription found.\n\nPress a to add a profile.\n\nAlready logged in? Press r to refresh."
+			help = "No subscription found.\n\nPress a to add a Claude or Codex profile.\n\nAlready logged in? Press r to refresh."
 		}
 		parts = append(parts, accent.Bold(true).Render("Your subscriptions, in one place."), "", dim.Width(w).Render(help))
 	} else {
-		for _, a := range m.accounts {
-			parts = append(parts, renderAccount(a, w, m.location, m.now), "")
-		}
+		parts = append(parts, renderAccounts(m.accounts, w, m.location, m.now))
 	}
 	return strings.Split(strings.Join(parts, "\n"), "\n")
 }
@@ -236,7 +241,7 @@ func (m Model) bodyLines() []string {
 func (m Model) View() tea.View {
 	w := m.contentWidth()
 	header := accent.Bold(true).Render("◈ husage") + dim.Render("  /  your coding subscriptions")
-	status := "Claude Code"
+	status := "Claude Code · Codex"
 	if m.demo {
 		status += "  ·  DEMO"
 	}
@@ -268,6 +273,9 @@ func (m Model) View() tea.View {
 	}
 	if m.profileOpen {
 		footer = "enter review command   esc cancel"
+		if len(m.profileProviders) > 1 {
+			footer = "tab provider   enter review   esc cancel"
+		}
 		if m.confirmProfile {
 			footer = "enter execute login   esc cancel"
 		}
@@ -313,7 +321,73 @@ func (m Model) View() tea.View {
 	return v
 }
 
+// renderAccounts keeps providers in first-seen order and preserves the account
+// order within each provider, including the active account's leading position.
+func renderAccounts(accounts []subscription.Account, width int, loc *time.Location, now time.Time) string {
+	var providers []string
+	groups := make(map[string][]subscription.Account)
+	for _, account := range accounts {
+		provider := account.Provider
+		if _, exists := groups[provider]; !exists {
+			providers = append(providers, provider)
+		}
+		groups[provider] = append(groups[provider], account)
+	}
+	var sections []string
+	for _, provider := range providers {
+		group := groups[provider]
+		label := safe(provider)
+		if label == "" {
+			label = "Other subscriptions"
+		}
+		count := fmt.Sprintf("%d subscriptions", len(group))
+		if len(group) == 1 {
+			count = "1 subscription"
+		}
+		heading := accent.Bold(true).Render(label) + dim.Render(" · "+count)
+		heading = ansi.Truncate(heading, max(1, width), "")
+		if remaining := width - lipgloss.Width(heading) - 2; remaining > 0 {
+			heading += dim.Render("  " + strings.Repeat("─", remaining))
+		}
+		sections = append(sections, heading+"\n\n"+renderAccountRows(group, width, loc, now))
+	}
+	return strings.Join(sections, "\n\n")
+}
+
+// Each provider's cards fill rows independently and wrap on narrow terminals.
+func renderAccountRows(accounts []subscription.Account, width int, loc *time.Location, now time.Time) string {
+	if len(accounts) == 0 {
+		return ""
+	}
+	const minCardWidth, gap = 40, 2
+	columns := min(len(accounts), max(1, (width+gap)/(minCardWidth+gap)))
+	cardWidth := max(1, (width-gap*(columns-1))/columns)
+	var rows []string
+	for start := 0; start < len(accounts); start += columns {
+		row := accounts[start:min(start+columns, len(accounts))]
+		height := 0
+		for _, a := range row {
+			height = max(height, lipgloss.Height(renderAccount(a, cardWidth, loc, now)))
+		}
+		var cards []string
+		for i, a := range row {
+			if i > 0 {
+				// JoinHorizontal pads short blocks with unstyled spaces. Give
+				// the spacer the full row height to retain our background.
+				cards = append(cards, base.Width(gap).Height(height).Render(""))
+			}
+			cards = append(cards, renderAccountSized(a, cardWidth, height, loc, now))
+		}
+		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, cards...))
+	}
+	return strings.Join(rows, "\n\n")
+}
+
 func renderAccount(a subscription.Account, width int, loc *time.Location, now time.Time) string {
+	return renderAccountSized(a, width, 0, loc, now)
+}
+
+func renderAccountSized(a subscription.Account, width, height int, loc *time.Location, now time.Time) string {
 	inner := max(1, width-6)
 	border := lipgloss.Color("#414052")
 	if a.Active {
@@ -327,7 +401,8 @@ func renderAccount(a subscription.Account, width int, loc *time.Location, now ti
 	gap := inner - lipgloss.Width(name) - lipgloss.Width(badge)
 	heading := name + "\n" + badge
 	if gap >= 2 {
-		heading = name + strings.Repeat(" ", gap) + badge
+		// Nested styles reset ANSI colors; the gap needs its own background.
+		heading = name + base.Render(strings.Repeat(" ", gap)) + badge
 	}
 	parts := []string{heading, dim.Render(safe(a.Email)), ""}
 	for i, w := range a.Windows {
@@ -339,13 +414,16 @@ func renderAccount(a subscription.Account, width int, loc *time.Location, now ti
 	if a.Error != "" {
 		parts = append(parts, "", base.Foreground(amber).Width(inner).Render(safe(a.Error)))
 	}
+	if a.Stale {
+		parts = append(parts, base.Foreground(amber).Width(inner).Render("Stale data · showing the last successful read."))
+	}
 	metadata := safe(a.Source) + " · " + ageText(a.UpdatedAt, now)
 	metaStyle := dim
-	if a.UpdatedAt.IsZero() || now.Sub(a.UpdatedAt) > 10*time.Minute {
+	if a.Stale || a.UpdatedAt.IsZero() || now.Sub(a.UpdatedAt) > 10*time.Minute {
 		metaStyle = base.Foreground(amber)
 	}
 	parts = append(parts, metaStyle.Render(metadata))
-	return base.Border(lipgloss.RoundedBorder()).BorderForeground(border).BorderBackground(bg).Padding(0, 2).Width(width).Render(strings.Join(parts, "\n"))
+	return base.Border(lipgloss.RoundedBorder()).BorderForeground(border).BorderBackground(bg).Padding(0, 2).Width(width).Height(height).Render(strings.Join(parts, "\n"))
 }
 
 func renderBar(used float64, width int) string {
@@ -414,12 +492,10 @@ func safe(s string) string {
 
 // Snapshot renders the same cards without starting an interactive terminal.
 func Snapshot(accounts []subscription.Account, width int, loc *time.Location, now time.Time) string {
-	parts := []string{accent.Bold(true).Render("◈ husage") + dim.Render("  /  Claude Code"), ""}
-	for _, a := range accounts {
-		parts = append(parts, renderAccount(a, max(20, width), loc, now), "")
-	}
+	parts := []string{accent.Bold(true).Render("◈ husage") + dim.Render("  /  Claude Code · Codex"), ""}
+	parts = append(parts, renderAccounts(accounts, max(20, width), loc, now))
 	if len(accounts) == 0 {
-		parts = append(parts, "No Claude subscription found. Open Claude Code and use /login.")
+		parts = append(parts, "No subscription found. Sign in with Claude Code or Codex.")
 	}
 	return strings.Join(parts, "\n")
 }

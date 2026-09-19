@@ -1,13 +1,14 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/franciscocpg/husage/internal/claude"
+	"github.com/franciscocpg/husage/internal/codex"
+	"github.com/franciscocpg/husage/internal/profile"
 )
 
 type profileDirs []string
@@ -15,7 +16,7 @@ type profileDirs []string
 func (p *profileDirs) String() string { return strings.Join(*p, ", ") }
 func (p *profileDirs) Set(value string) error {
 	if strings.TrimSpace(value) == "" {
-		return fmt.Errorf("Claude configuration directory cannot be empty; use current for the active profile")
+		return fmt.Errorf("Profile directory cannot be empty; use current for the active profile")
 	}
 	*p = append(*p, value)
 	return nil
@@ -26,19 +27,10 @@ func (p *profileDirs) Set(value string) error {
 func claudeProfiles(home string, dirs []string, profilesPath string) (claude.Options, []claude.Options, error) {
 	active := claude.Options{Home: home, ConfigDir: expand(os.Getenv("CLAUDE_CONFIG_DIR"), home), SecureDir: expand(os.Getenv("CLAUDE_SECURESTORAGE_CONFIG_DIR"), home)}
 	if len(dirs) == 0 {
-		path := expand(profilesPath, home)
-		explicit := path != ""
-		if !explicit {
-			path = filepath.Join(home, ".config", "husage", "profiles.json")
-		}
-		data, err := os.ReadFile(path)
-		if err != nil && (explicit || !os.IsNotExist(err)) {
-			return active, nil, fmt.Errorf("cannot read profile list %s", path)
-		}
-		if err == nil {
-			if json.Unmarshal(data, &dirs) != nil || len(dirs) == 0 {
-				return active, nil, fmt.Errorf("profile list %s must be a nonempty JSON array of Claude configuration directories", path)
-			}
+		var err error
+		dirs, err = savedDirectories(home, profilesPath, "claude")
+		if err != nil {
+			return active, nil, err
 		}
 	}
 	if len(dirs) == 0 {
@@ -61,4 +53,65 @@ func claudeProfiles(home string, dirs []string, profilesPath string) (claude.Opt
 		options = append(options, claude.Options{Home: home, ConfigDir: dir})
 	}
 	return active, options, nil
+}
+
+func savedDirectories(home, path, provider string) ([]string, error) {
+	explicit := path != ""
+	path = expand(path, home)
+	if !explicit {
+		path = filepath.Join(home, ".config", "husage", "profiles.json")
+	}
+	data, err := os.ReadFile(path)
+	if !explicit && os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("cannot read profile list %s", path)
+	}
+	entries, err := profile.ParseEntries(data)
+	if err != nil {
+		return nil, fmt.Errorf("invalid profile list %s: %w", path, err)
+	}
+	var dirs []string
+	for _, entry := range entries {
+		if entry.Provider == provider {
+			dirs = append(dirs, entry.Directory)
+		}
+	}
+	return dirs, nil
+}
+
+func codexProfiles(home string, dirs []string, profilesPath string) ([]codex.Options, error) {
+	active := expand(os.Getenv("CODEX_HOME"), home)
+	if active == "" {
+		active = filepath.Join(home, ".codex")
+	}
+	if !filepath.IsAbs(active) {
+		return nil, fmt.Errorf("CODEX_HOME must be an absolute directory")
+	}
+	if len(dirs) == 0 {
+		var err error
+		dirs, err = savedDirectories(home, profilesPath, "codex")
+		if err != nil {
+			return nil, err
+		}
+	}
+	optional := len(dirs) == 0
+	if optional {
+		dirs = []string{"current"}
+	}
+	var options []codex.Options
+	for _, dir := range dirs {
+		if dir == "current" {
+			dir = active
+		} else {
+			dir = expand(dir, home)
+		}
+		if !filepath.IsAbs(dir) {
+			return nil, fmt.Errorf("Codex home must be absolute, start with ~/ or be current")
+		}
+		dir = filepath.Clean(dir)
+		options = append(options, codex.Options{Home: dir, Active: dir == filepath.Clean(active), Optional: optional})
+	}
+	return options, nil
 }

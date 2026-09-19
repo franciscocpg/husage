@@ -7,6 +7,7 @@ import (
 	"errors"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/franciscocpg/husage/internal/claude"
+	"github.com/franciscocpg/husage/internal/codexcli"
 	"github.com/franciscocpg/husage/internal/profile"
 	"io"
 	"os"
@@ -295,5 +296,59 @@ func TestReadOnlyViewDoesNotOfferProfileCreation(t *testing.T) {
 	m, cmd := profileKey(m, 'a', "a")
 	if m.profileOpen || cmd != nil {
 		t.Fatal("read-only view offered profile creation")
+	}
+}
+
+func TestAddCodexProfileRequiresConfirmationAndSuccessfulLogin(t *testing.T) {
+	m, claudeStore := profileModel(t)
+	store := profile.Store{Home: claudeStore.Home, Provider: "codex"}
+	codexActions := &ProfileActions{Name: "Codex", Kind: "codex", Directory: store.Directory, Command: codexcli.LoginCommand,
+		Login: func(ctx context.Context, name string) tea.ExecCommand {
+			return &fakeProfileLogin{run: func() error { _, err := store.Prepare(ctx, name); return err }}
+		}, Register: store.Register}
+	m = m.WithProfileProviders([]*ProfileActions{m.profileActions, codexActions})
+	m = nameProfile(m, "work")
+	m, _ = profileKey(m, tea.KeyTab, "")
+	if m.profileActions != codexActions {
+		t.Fatal("provider selection failed")
+	}
+	m, cmd := profileKey(m, tea.KeyEnter, "")
+	if cmd != nil || !m.confirmProfile {
+		t.Fatal("preview started login")
+	}
+	m.height = 40
+	view := ansi.Strip(m.View().Content)
+	if !strings.Contains(view, "Confirm Codex login") || !strings.Contains(view, "CODEX_HOME=") || !strings.Contains(view, "codex login") {
+		t.Fatal("incorrect Codex preview", view)
+	}
+	entries, _ := os.ReadDir(store.Home)
+	if len(entries) != 0 {
+		t.Fatal("preview created files")
+	}
+	m, _ = profileKey(m, tea.KeyTab, "")
+	if m.profileActions != codexActions {
+		t.Fatal("confirmed provider changed")
+	}
+	m, cmd = profileKey(m, tea.KeyEnter, "")
+	if cmd == nil || m.profileLogin == nil {
+		t.Fatal("login not scheduled")
+	}
+	if err := m.profileLogin.Run(); err != nil {
+		t.Fatal(err)
+	}
+	next, save := m.Update(profileLoginFinishedMsg{})
+	m = next.(Model)
+	if save == nil {
+		t.Fatal("successful login did not schedule save")
+	}
+	next, _ = m.Update(save())
+	m = next.(Model)
+	if m.createdDirectory != store.Directory("work") {
+		t.Fatal("Codex profile not saved")
+	}
+	data, _ := os.ReadFile(store.ConfigPath())
+	profiles, err := profile.ParseEntries(data)
+	if err != nil || profiles[len(profiles)-1].Provider != "codex" {
+		t.Fatal(profiles, err)
 	}
 }

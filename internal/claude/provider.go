@@ -88,6 +88,9 @@ func (p *Provider) loadCurrent(ctx context.Context, id identity) []subscription.
 		a.Windows = p.cached[0].Windows
 		a.UpdatedAt = p.cached[0].UpdatedAt
 	}
+	if len(a.Windows) == 0 {
+		p.restoreUsage(id, &a)
+	}
 	readToken := p.readToken
 	if readToken == nil {
 		readToken = p.token
@@ -111,10 +114,14 @@ func (p *Provider) loadCurrent(ctx context.Context, id identity) []subscription.
 		if err == nil {
 			a.Windows = windows
 			a.UpdatedAt = p.now()
+			if p.saveUsage(id, a) != nil {
+				a.Error = "Usage loaded, but the local cache could not be saved."
+			}
 		}
 	}
 	if err != nil {
 		a.Error = err.Error()
+		a.Stale = len(a.Windows) > 0
 	}
 	p.cached = []subscription.Account{a}
 	return p.cached

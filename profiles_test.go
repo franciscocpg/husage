@@ -65,3 +65,33 @@ func TestSavedClaudeProfilesAndCLIOverride(t *testing.T) {
 		}
 	}
 }
+
+func TestMixedProfilesAndCodexHomeOverride(t *testing.T) {
+	home := t.TempDir()
+	// The user's requested account selector is scoped to this test process.
+	t.Setenv("CODEX_HOME", filepath.Join(home, "active-codex"))
+	path := filepath.Join(home, "profiles.json")
+	if err := os.WriteFile(path, []byte(`["current","~/claude-work",{"provider":"codex","directory":"current"},{"provider":"codex","directory":"~/codex-work"}]`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, claudeEntries, err := claudeProfiles(home, nil, path)
+	if err != nil || len(claudeEntries) != 2 || claudeEntries[1].ConfigDir != filepath.Join(home, "claude-work") {
+		t.Fatal(claudeEntries, err)
+	}
+	codexEntries, err := codexProfiles(home, nil, path)
+	if err != nil || len(codexEntries) != 2 || !codexEntries[0].Active || codexEntries[1].Active || codexEntries[1].Home != filepath.Join(home, "codex-work") {
+		t.Fatal(codexEntries, err)
+	}
+	codexEntries, err = codexProfiles(home, []string{"~/explicit"}, path)
+	if err != nil || len(codexEntries) != 1 || codexEntries[0].Home != filepath.Join(home, "explicit") {
+		t.Fatal(codexEntries, err)
+	}
+	t.Setenv("CODEX_HOME", "")
+	codexEntries, err = codexProfiles(home, nil, "")
+	if err != nil || len(codexEntries) != 1 || !codexEntries[0].Optional || codexEntries[0].Home != filepath.Join(home, ".codex") {
+		t.Fatal(codexEntries, err)
+	}
+	if _, err := codexProfiles(home, []string{"relative"}, ""); err == nil {
+		t.Fatal("accepted relative Codex home")
+	}
+}

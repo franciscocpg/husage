@@ -12,9 +12,11 @@ import (
 
 // ProfileActions is optional: demo and read-only views never receive it.
 type ProfileActions struct {
-	Directory func(string) string
-	Login     func(context.Context, string) tea.ExecCommand
-	Register  func(context.Context, string) (string, error)
+	Name, Kind string
+	Directory  func(string) string
+	Command    func(string) string
+	Login      func(context.Context, string) tea.ExecCommand
+	Register   func(context.Context, string) (string, error)
 }
 
 type profileLoginFinishedMsg struct{ err error }
@@ -27,6 +29,33 @@ type profileAddedMsg struct {
 func (m Model) WithProfileActions(actions *ProfileActions) Model {
 	m.profileActions = actions
 	return m
+}
+
+func (m Model) WithProfileProviders(actions []*ProfileActions) Model {
+	m.profileProviders = actions
+	if len(actions) > 0 {
+		m.profileActions = actions[0]
+	}
+	return m
+}
+
+func (a *ProfileActions) name() string {
+	if a.Name != "" {
+		return a.Name
+	}
+	return "Claude"
+}
+func (a *ProfileActions) kind() string {
+	if a.Kind != "" {
+		return a.Kind
+	}
+	return "claude"
+}
+func (a *ProfileActions) command(dir string) string {
+	if a.Command != nil {
+		return a.Command(dir)
+	}
+	return profile.LoginCommand(dir)
 }
 
 func (m Model) updateProfileKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -69,6 +98,20 @@ func (m Model) updateProfileKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Exec(m.profileLogin, func(err error) tea.Msg { return profileLoginFinishedMsg{err: err} })
 	}
 	switch key {
+	case "tab", "shift+tab":
+		if len(m.profileProviders) > 1 {
+			for i, actions := range m.profileProviders {
+				if actions == m.profileActions {
+					step := 1
+					if key == "shift+tab" {
+						step = len(m.profileProviders) - 1
+					}
+					m.profileActions = m.profileProviders[(i+step)%len(m.profileProviders)]
+					break
+				}
+			}
+			m.profileError = ""
+		}
 	case "enter":
 		name := string(m.profileName)
 		if err := profile.ValidateName(name); err != nil {
@@ -135,10 +178,10 @@ func (m Model) profileLines() []string {
 	w := m.contentWidth()
 	var parts []string
 	if m.createdDirectory != "" {
-		parts = []string{base.Foreground(green).Bold(true).Render("✓ Profile added"), "", base.Render("Claude login succeeded."), "", dim.Render("Saved to ~/.config/husage/profiles.json"), "", base.Render(safe(m.createdDirectory)), "", dim.Render("Your dashboard is refreshing with the new profile.")}
+		parts = []string{base.Foreground(green).Bold(true).Render("✓ Profile added"), "", base.Render(m.profileActions.name() + " login succeeded."), "", dim.Render("Saved to ~/.config/husage/profiles.json"), "", base.Render(safe(m.createdDirectory)), "", dim.Render("Your dashboard is refreshing with the new profile.")}
 	} else if m.confirmProfile {
-		parts = []string{accent.Bold(true).Render("Confirm Claude login"), "", dim.Render("Press Enter to execute this command:"), ""}
-		for _, line := range strings.Split(profile.LoginCommand(m.profileActions.Directory(string(m.profileName))), "\n") {
+		parts = []string{accent.Bold(true).Render("Confirm " + m.profileActions.name() + " login"), "", dim.Render("Press Enter to execute this command:"), ""}
+		for _, line := range strings.Split(m.profileActions.command(m.profileActions.Directory(string(m.profileName))), "\n") {
 			parts = append(parts, accent.Render(line))
 		}
 		parts = append(parts, "", dim.Render("The profile is saved only after login succeeds."))
@@ -156,11 +199,15 @@ func (m Model) profileLines() []string {
 		if name == "" {
 			input += dim.Render("  e.g. personal or work")
 		}
-		directory := "~/.config/husage/claude/<name>"
+		directory := "~/.config/husage/" + m.profileActions.kind() + "/<name>"
 		if profile.ValidateName(name) == nil {
 			directory = m.profileActions.Directory(name)
 		}
-		parts = []string{accent.Bold(true).Render("Add a Claude profile"), "", base.Bold(true).Render("Profile name"), input, "", dim.Render("Letters, numbers, dashes and underscores."), "", dim.Render("Profile directory:"), base.Render(safe(directory)), "", dim.Render("Next: review the login command.")}
+		parts = []string{accent.Bold(true).Render("Add a " + m.profileActions.name() + " profile"), ""}
+		if len(m.profileProviders) > 1 {
+			parts = append(parts, dim.Render("Provider: "+m.profileActions.name()+" · Tab to change"), "")
+		}
+		parts = append(parts, base.Bold(true).Render("Profile name"), input, "", dim.Render("Letters, numbers, dashes and underscores."), "", dim.Render("Profile directory:"), base.Render(safe(directory)), "", dim.Render("Next: review the login command."))
 	}
 	if m.profileError != "" {
 		parts = append(parts, "", base.Foreground(amber).Render(safe(m.profileError)))

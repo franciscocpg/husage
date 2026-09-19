@@ -106,3 +106,43 @@ func TestLoginPreviewMatchesEnvironmentAndQuotesPaths(t *testing.T) {
 		t.Fatal("wrong environment")
 	}
 }
+
+func TestCodexLoginIsIsolatedAndOnlyRegistersAfterSuccess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX fake executable")
+	}
+	bin := t.TempDir()
+	script := `#!/bin/sh
+[ "$#" = 1 ] && [ "$1" = login ] || exit 40
+[ "$CODEX_HOME" = "$HUSAGE_EXPECT_CODEX_HOME" ] && [ -d "$CODEX_HOME" ] || exit 41
+[ -z "${OPENAI_API_KEY+x}" ] && [ -z "${CODEX_API_KEY+x}" ] && [ -z "${CODEX_ACCESS_TOKEN+x}" ] || exit 42
+exit "$HUSAGE_LOGIN_EXIT"
+`
+	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("OPENAI_API_KEY", "unrelated-credential")
+	t.Setenv("CODEX_API_KEY", "unrelated-credential")
+	t.Setenv("CODEX_ACCESS_TOKEN", "unrelated-credential")
+	s := Store{Home: t.TempDir(), Provider: "codex"}
+	t.Setenv("HUSAGE_EXPECT_CODEX_HOME", s.Directory("work"))
+	t.Setenv("HUSAGE_LOGIN_EXIT", "1")
+	login := NewLogin(context.Background(), s, "work")
+	if err := login.Run(); err == nil {
+		t.Fatal("failed login accepted")
+	}
+	if _, err := os.Stat(s.ConfigPath()); !os.IsNotExist(err) {
+		t.Fatal("failed login registered")
+	}
+	t.Setenv("HUSAGE_LOGIN_EXIT", "0")
+	if err := login.Run(); err != nil {
+		t.Fatal("retry failed", err)
+	}
+	if _, err := os.Stat(s.ConfigPath()); !os.IsNotExist(err) {
+		t.Fatal("registered before success callback")
+	}
+	if _, err := s.Register(context.Background(), "work"); err != nil {
+		t.Fatal(err)
+	}
+}

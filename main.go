@@ -15,6 +15,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/franciscocpg/husage/internal/claude"
+	"github.com/franciscocpg/husage/internal/codex"
+	"github.com/franciscocpg/husage/internal/codexcli"
 	"github.com/franciscocpg/husage/internal/config"
 	"github.com/franciscocpg/husage/internal/profile"
 	"github.com/franciscocpg/husage/internal/subscription"
@@ -36,7 +38,9 @@ func run(args []string, out io.Writer) error {
 	refresh := flags.Duration("refresh", config.DefaultRefresh, "override saved auto-reload interval for this launch (minimum 5s; API requests at most once per 5m)")
 	zone := flags.String("timezone", "", "IANA timezone for reset times (default: system timezone)")
 	var dirs profileDirs
+	var codexDirs profileDirs
 	flags.Var(&dirs, "claude-dir", "Claude configuration directory; repeat for multiple subscriptions, or use current")
+	flags.Var(&codexDirs, "codex-home", "Codex home directory; repeat for multiple subscriptions, or use current for CODEX_HOME")
 	profilesPath := flags.String("profiles", "", "JSON profile list (default: ~/.config/husage/profiles.json, if present)")
 	width := flags.Int("width", 80, "snapshot width (20–200 columns)")
 	if err := flags.Parse(args); err != nil {
@@ -63,7 +67,7 @@ func run(args []string, out io.Writer) error {
 		return err
 	}
 	var provider subscription.Provider
-	var profileActions *tui.ProfileActions
+	var profileActions []*tui.ProfileActions
 	if *demo {
 		provider = subscription.Demo{}
 	} else {
@@ -72,9 +76,14 @@ func run(args []string, out io.Writer) error {
 			return err
 		}
 		group := claude.NewProfiles(active, profiles)
-		provider = group
+		codexOptions, err := codexProfiles(home, codexDirs, *profilesPath)
+		if err != nil {
+			return err
+		}
+		codexGroup := codex.NewProfiles(codexOptions)
+		provider = subscription.Combined{group, codexGroup}
 		store := profile.Store{Home: home}
-		profileActions = &tui.ProfileActions{Directory: store.Directory,
+		profileActions = append(profileActions, &tui.ProfileActions{Directory: store.Directory,
 			Login: func(ctx context.Context, name string) tea.ExecCommand { return profile.NewLogin(ctx, store, name) },
 			Register: func(ctx context.Context, name string) (string, error) {
 				dir, err := store.Register(ctx, name)
@@ -82,7 +91,17 @@ func run(args []string, out io.Writer) error {
 					group.Add(claude.Options{Home: home, ConfigDir: dir})
 				}
 				return dir, err
-			}}
+			}})
+		codexStore := profile.Store{Home: home, Provider: "codex"}
+		profileActions = append(profileActions, &tui.ProfileActions{Name: "Codex", Kind: "codex", Directory: codexStore.Directory, Command: codexcli.LoginCommand,
+			Login: func(ctx context.Context, name string) tea.ExecCommand { return profile.NewLogin(ctx, codexStore, name) },
+			Register: func(ctx context.Context, name string) (string, error) {
+				dir, err := codexStore.Register(ctx, name)
+				if err == nil {
+					codexGroup.Add(codex.Options{Home: dir})
+				}
+				return dir, err
+			}})
 	}
 	// Bubble Tea ignores parent terminal signals while a child owns the terminal,
 	// so cancelling login with Ctrl+C returns to the form instead of quitting us.
@@ -118,7 +137,7 @@ func run(args []string, out io.Writer) error {
 		return fmt.Errorf("initialize configuration: %w", err)
 	}
 	model := tui.New(ctx, provider, interval, loc, *demo).
-		WithProfileActions(profileActions).
+		WithProfileProviders(profileActions).
 		WithConfigActions(&tui.ConfigActions{Save: configStore.Save})
 	_, err = tea.NewProgram(model, tea.WithContext(ctx), tea.WithOutput(out)).Run()
 	if ctx.Err() != nil {

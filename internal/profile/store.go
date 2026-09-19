@@ -1,4 +1,4 @@
-// Package profile manages husage's list of native Claude configuration paths.
+// Package profile manages husage's list of native subscription configuration paths.
 package profile
 
 import (
@@ -12,13 +12,20 @@ import (
 	"strings"
 )
 
-type Store struct{ Home string }
+type Store struct{ Home, Provider string }
+
+func (s Store) Kind() string {
+	if s.Provider == "" {
+		return "claude"
+	}
+	return s.Provider
+}
 
 func (s Store) ConfigPath() string {
 	return filepath.Join(s.Home, ".config", "husage", "profiles.json")
 }
 func (s Store) Directory(name string) string {
-	return filepath.Join(s.Home, ".config", "husage", "claude", name)
+	return filepath.Join(s.Home, ".config", "husage", s.Kind(), name)
 }
 
 var validName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$`)
@@ -33,6 +40,9 @@ func ValidateName(name string) error {
 // Prepare creates or reuses an unfinished login directory after confirmation.
 // The profile list remains unchanged until Register is called after login succeeds.
 func (s Store) Prepare(ctx context.Context, name string) (string, error) {
+	if s.Kind() != "claude" && s.Kind() != "codex" {
+		return "", errors.New("Unsupported profile provider.")
+	}
 	if err := ValidateName(name); err != nil {
 		return "", err
 	}
@@ -67,10 +77,12 @@ func checkUnfinishedDirectory(dir string) error {
 	if err != nil || !info.IsDir() {
 		return errors.New("That profile path is not a regular directory. Choose another profile name.")
 	}
-	if _, err := os.Lstat(filepath.Join(dir, ".credentials.json")); err == nil {
-		return errors.New("That directory already contains credentials; it was left unchanged. Choose another profile name.")
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("check existing profile credentials: %w", err)
+	for _, file := range []string{".credentials.json", "auth.json"} {
+		if _, err := os.Lstat(filepath.Join(dir, file)); err == nil {
+			return errors.New("That directory already contains credentials; it was left unchanged. Choose another profile name.")
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("check existing profile credentials: %w", err)
+		}
 	}
 	config := filepath.Join(dir, ".claude.json")
 	info, err = os.Lstat(config)
@@ -97,13 +109,13 @@ func checkUnfinishedDirectory(dir string) error {
 	return nil
 }
 
-func (s Store) readPaths(dir string) ([]string, error) {
+func (s Store) readPaths(dir string) ([]json.RawMessage, error) {
 	config := s.ConfigPath()
 	if info, err := os.Lstat(config); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return nil, errors.New("The profile list is a symbolic link; it was left unchanged.")
 	}
 	data, err := os.ReadFile(config)
-	paths := []string{"current"}
+	paths := []json.RawMessage{json.RawMessage(`"current"`)}
 	if err == nil {
 		if json.Unmarshal(data, &paths) != nil || len(paths) == 0 {
 			return nil, errors.New("The existing profile list is invalid; it was left unchanged.")
@@ -111,7 +123,18 @@ func (s Store) readPaths(dir string) ([]string, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("read profile list: %w", err)
 	}
-	for _, p := range paths {
+	if errors.Is(err, os.ErrNotExist) {
+		data = []byte(`["current"]`)
+	}
+	entries, err := ParseEntries(data)
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range entries {
+		if entry.Provider != s.Kind() {
+			continue
+		}
+		p := entry.Directory
 		if p == "current" {
 			continue
 		}
@@ -131,6 +154,9 @@ func (s Store) readPaths(dir string) ([]string, error) {
 // Register atomically appends a prepared profile after successful authentication.
 // It rereads the list under a short lock, preserving profiles added during login.
 func (s Store) Register(ctx context.Context, name string) (string, error) {
+	if s.Kind() != "claude" && s.Kind() != "codex" {
+		return "", errors.New("Unsupported profile provider.")
+	}
 	if err := ValidateName(name); err != nil {
 		return "", err
 	}
@@ -155,7 +181,24 @@ func (s Store) Register(ctx context.Context, name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	paths = append(paths, dir)
+	var entry []byte
+	if s.Kind() == "claude" {
+		entry, _ = json.Marshal(dir)
+	} else {
+		// Preserve the automatically discovered Codex account when the first
+		// additional home is saved into a previously Claude-only list.
+		existing, _ := json.Marshal(paths)
+		entries, _ := ParseEntries(existing)
+		hasCodex := false
+		for _, e := range entries {
+			hasCodex = hasCodex || e.Provider == "codex"
+		}
+		if !hasCodex {
+			paths = append(paths, json.RawMessage(`{"provider":"codex","directory":"current"}`))
+		}
+		entry, _ = json.Marshal(Entry{Provider: s.Kind(), Directory: dir})
+	}
+	paths = append(paths, entry)
 	data, err := json.MarshalIndent(paths, "", "  ")
 	if err != nil {
 		return "", err

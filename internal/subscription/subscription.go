@@ -22,6 +22,7 @@ type Account struct {
 	UpdatedAt time.Time `json:"updated_at"`
 	Source    string    `json:"source"`
 	Error     string    `json:"error,omitempty"`
+	Stale     bool      `json:"stale,omitempty"`
 }
 
 // Provider keeps authentication and data acquisition outside the terminal UI.

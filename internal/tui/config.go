@@ -101,7 +101,7 @@ func (m Model) configLines() []string {
 		base.Bold(true).Render("Auto-reload interval"), input, "",
 		dim.Render("Examples: 30s, 5m, 10m, 1h. Default: 5m."),
 		dim.Render("Minimum: 5s. Ctrl+U clears the field."), "",
-		dim.Render("Claude usage requests remain limited to once per 5 minutes."), "",
+		dim.Render("Usage is cached for 5 minutes per profile."), "",
 		dim.Render("Enter saves and applies immediately. Esc discards changes."),
 		dim.Render("Saved in:"), dim.Render("~/.config/husage/config.json"),
 	}
