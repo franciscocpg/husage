@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"sync"
 
 	"github.com/franciscocpg/husage/internal/subscription"
 )
@@ -12,9 +13,23 @@ import (
 // Profiles combines independent native Claude logins. Each Provider owns its
 // credential source, last successful usage, and rate-limit cooldown.
 type Profiles struct {
+	mu        sync.Mutex
 	active    Options
 	providers []*Provider
 	last      map[*Provider]subscription.Account
+}
+
+// Add registers an already-created configuration while keeping other accounts'
+// caches and cooldowns. It serializes with an in-flight usage refresh.
+func (g *Profiles) Add(opts Options) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, p := range g.providers {
+		if p.opts == opts {
+			return
+		}
+	}
+	g.providers = append(g.providers, New(opts))
 }
 
 func NewProfiles(active Options, options []Options) *Profiles {
@@ -37,6 +52,8 @@ func (o Options) identityPath() string {
 }
 
 func (g *Profiles) Load(ctx context.Context) ([]subscription.Account, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	active, _ := readIdentity(g.active.identityPath())
 	accounts := []subscription.Account{}
 	seen := map[string]int{}

@@ -15,6 +15,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/franciscocpg/husage/internal/claude"
+	"github.com/franciscocpg/husage/internal/profile"
 	"github.com/franciscocpg/husage/internal/subscription"
 	"github.com/franciscocpg/husage/internal/tui"
 )
@@ -61,6 +62,7 @@ func run(args []string, out io.Writer) error {
 		return err
 	}
 	var provider subscription.Provider
+	var profileActions *tui.ProfileActions
 	if *demo {
 		provider = subscription.Demo{}
 	} else {
@@ -68,7 +70,16 @@ func run(args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		provider = claude.NewProfiles(active, profiles)
+		group := claude.NewProfiles(active, profiles)
+		provider = group
+		store := profile.Store{Home: home}
+		profileActions = &tui.ProfileActions{Directory: store.Directory, Create: func(ctx context.Context, name string) (string, error) {
+			dir, err := store.Add(ctx, name)
+			if err == nil {
+				group.Add(claude.Options{Home: home, ConfigDir: dir})
+			}
+			return dir, err
+		}}
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
@@ -85,7 +96,8 @@ func run(args []string, out io.Writer) error {
 		_, err = fmt.Fprintln(out, tui.Snapshot(accounts, *width, loc, time.Now()))
 		return err
 	}
-	_, err = tea.NewProgram(tui.New(ctx, provider, *refresh, loc, *demo), tea.WithContext(ctx), tea.WithOutput(out)).Run()
+	model := tui.New(ctx, provider, *refresh, loc, *demo).WithProfileActions(profileActions)
+	_, err = tea.NewProgram(model, tea.WithContext(ctx), tea.WithOutput(out)).Run()
 	if ctx.Err() != nil {
 		return nil
 	}

@@ -29,6 +29,7 @@ The dashboard shows account names, email addresses, the active Claude login, ses
 
 | Key | Action |
 | --- | --- |
+| `a` | Add a Claude profile |
 | `r` | Refresh data |
 | `↑` / `↓`, `k` / `j` | Scroll |
 | Page Up / Page Down, Ctrl+B / Ctrl+F | Scroll a page |
@@ -44,6 +45,14 @@ The live dashboard combines independently authenticated Claude configurations. E
 The direct provider requests usage at most once every five minutes per configuration during a run and honors longer `Retry-After` delays. Pressing `r` does not bypass this cooldown. Network failures preserve the last successful usage with a visible error. Data older than ten minutes is marked stale; a past reset is labeled rather than inventing fresh usage. Missing limits and reset times remain unavailable.
 
 husage never switches accounts, runs inference, refreshes OAuth tokens, or writes credentials. If your login expires, open Claude Code to renew it, then restart husage. macOS may ask for access to the existing Keychain item. Credential storage follows [Claude Code's authentication documentation](https://code.claude.com/docs/en/authentication#credential-management).
+
+## Add a profile in the TUI
+
+Press `a`, enter a profile name (for example, `personal`), and press Enter. husage creates `~/.config/husage/claude/personal` and appends its absolute path to `~/.config/husage/profiles.json`. The new profile appears in the current dashboard immediately, awaiting login. The confirmation screen shows the exact Claude login command for its directory.
+
+Names accept 1–48 letters, numbers, dashes, or underscores and must start with a letter or number. The form previews the directory before saving. Esc cancels without writing anything. Existing profiles are preserved; duplicate names and existing directories are rejected. The profile directory and JSON file are created with owner-only permissions.
+
+The action always saves to the default `~/.config/husage/profiles.json`, including when the current view was launched with `--profiles` or `--claude-dir`. Those overrides continue to control future launches when explicitly supplied. Demo mode stays read-only and does not offer profile creation.
 
 ## Show two subscriptions
 

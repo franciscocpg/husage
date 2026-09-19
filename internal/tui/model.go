@@ -34,17 +34,22 @@ type resultMsg struct {
 type tickMsg time.Time
 
 type Model struct {
-	provider              subscription.Provider
-	ctx                   context.Context
-	accounts              []subscription.Account
-	err                   error
-	loading               bool
-	loaded                bool
-	demo                  bool
-	width, height, offset int
-	refresh               time.Duration
-	location              *time.Location
-	now                   time.Time
+	provider                                   subscription.Provider
+	ctx                                        context.Context
+	accounts                                   []subscription.Account
+	err                                        error
+	loading                                    bool
+	loaded                                     bool
+	demo                                       bool
+	width, height, offset                      int
+	refresh                                    time.Duration
+	location                                   *time.Location
+	now                                        time.Time
+	profileActions                             *ProfileActions
+	profileOpen, savingProfile, reloadAfterAdd bool
+	profileName                                []rune
+	profileCursor, profileScroll               int
+	profileError, createdDirectory             string
 }
 
 func New(ctx context.Context, p subscription.Provider, refresh time.Duration, location *time.Location, demo bool) Model {
@@ -65,7 +70,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = max(1, msg.Width)
 		m.height = max(1, msg.Height)
 	case tea.KeyPressMsg:
+		if m.profileOpen {
+			return m.updateProfileKey(msg)
+		}
 		switch msg.String() {
+		case "a":
+			if m.profileActions != nil {
+				m.profileOpen = true
+				m.profileName = nil
+				m.profileCursor = 0
+				m.profileScroll = 0
+				m.profileError = ""
+				m.createdDirectory = ""
+			}
 		case "q", "ctrl+c", "esc":
 			return m, tea.Quit
 		case "r":
@@ -94,6 +111,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil {
 			m.accounts = msg.accounts
 		}
+		if m.reloadAfterAdd {
+			m.reloadAfterAdd = false
+			m.loading = true
+			return m, m.load()
+		}
+	case tea.PasteMsg:
+		if m.profileOpen && !m.savingProfile && m.createdDirectory == "" {
+			m.insertProfileText(msg.Content)
+		}
+	case profileAddedMsg:
+		m.savingProfile = false
+		if msg.err != nil {
+			m.profileError = msg.err.Error()
+			m.profileScroll = 1 << 20
+			return m, nil
+		}
+		m.createdDirectory = msg.directory
+		m.profileScroll = 0
+		if m.loading {
+			m.reloadAfterAdd = true
+		} else {
+			m.loading = true
+			return m, m.load()
+		}
 	case tickMsg:
 		m.now = time.Time(msg)
 		if !m.loading {
@@ -110,6 +151,9 @@ func (m Model) bodyHeight() int   { return max(1, m.height-7) }
 func (m Model) contentWidth() int { return max(1, min(90, m.width-4)) }
 
 func (m Model) bodyLines() []string {
+	if m.profileOpen {
+		return m.profileLines()
+	}
 	w := m.contentWidth()
 	var parts []string
 	if m.err != nil {
@@ -118,7 +162,11 @@ func (m Model) bodyLines() []string {
 	if !m.loaded {
 		parts = append(parts, dim.Render("Reading your Claude subscriptions…"))
 	} else if len(m.accounts) == 0 && m.err == nil {
-		parts = append(parts, accent.Bold(true).Render("Your subscriptions, in one place."), "", dim.Width(w).Render("No Claude subscription found.\n\nOpen Claude Code and use /login, then press r.\n\nRepeat --claude-dir to monitor multiple Claude configurations."))
+		help := "No Claude subscription found.\n\nOpen Claude Code and use /login, then press r.\n\nRepeat --claude-dir to monitor multiple Claude configurations."
+		if m.profileActions != nil {
+			help = "No Claude subscription found.\n\nPress a to add a profile.\n\nAlready logged in? Press r to refresh."
+		}
+		parts = append(parts, accent.Bold(true).Render("Your subscriptions, in one place."), "", dim.Width(w).Render(help))
 	} else {
 		for _, a := range m.accounts {
 			parts = append(parts, renderAccount(a, w, m.location, m.now), "")
@@ -141,13 +189,34 @@ func (m Model) View() tea.View {
 	lines := m.bodyLines()
 	h := m.bodyHeight()
 	start := min(m.offset, max(0, len(lines)-h))
+	if m.profileOpen {
+		start = min(m.profileScroll, max(0, len(lines)-h))
+	}
 	end := min(len(lines), start+h)
 	visible := append([]string{}, lines[start:end]...)
 	for len(visible) < h {
 		visible = append(visible, "")
 	}
 	footer := "r refresh   ↑↓ scroll   q quit"
-	if len(lines) > h {
+	if m.profileActions != nil {
+		footer = "a add profile   " + footer
+	}
+	if m.profileOpen {
+		footer = "enter create profile   esc cancel"
+		if m.savingProfile {
+			footer = "Creating profile…"
+		}
+		if m.createdDirectory != "" {
+			footer = "enter return to dashboard"
+		}
+		if len(lines) > h && !m.savingProfile {
+			footer = "enter save  esc cancel  pg↑↓ scroll"
+			if m.createdDirectory != "" {
+				footer = "enter done  pg↑↓ scroll"
+			}
+		}
+	}
+	if len(lines) > h && !m.profileOpen {
 		footer += fmt.Sprintf("   %d–%d/%d", start+1, end, len(lines))
 	}
 	content := []string{header, dim.Render(status), ""}
