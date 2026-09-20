@@ -51,9 +51,11 @@ homebrew_casks:
       branch: main
     directory: Casks
     caveats: "Install the native Claude, Codex, or Cursor CLI for the accounts you want to monitor."
-    hooks:
-      post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/husage"]
-          end
+    # Use the declarative Homebrew hook until GoReleaser supports install_steps.
+    # https://github.com/goreleaser/goreleaser/pull/6873
+    custom_block: |
+      postflight_steps do
+        on_macos do
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ "{{staged_path}}" }}/husage"]
+        end
+      end
