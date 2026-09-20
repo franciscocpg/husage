@@ -59,6 +59,9 @@ func TestPersistentUsageSurvivesRestartAndFailures(t *testing.T) {
 		if a.Error == "" || !a.Stale || len(a.Windows) != 1 || a.Windows[0].Used != 38 || !a.UpdatedAt.Equal(first.UpdatedAt) {
 			t.Fatalf("failure %d lost last successful response: %+v", failure, a)
 		}
+		if a.Warning != "" {
+			t.Fatalf("temporary failure %d incorrectly requested authentication: %s", failure, a.Warning)
+		}
 		saved, _ := os.ReadFile(path)
 		if string(saved) != string(original) {
 			t.Fatal("failure overwrote successful cache")

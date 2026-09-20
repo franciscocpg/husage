@@ -49,6 +49,8 @@ func (p *Provider) Load(ctx context.Context) ([]subscription.Account, error) {
 			return nil, nil
 		}
 		p.cached = []subscription.Account{{ID: "cursor:current", Provider: "Cursor", Name: "Cursor", Active: true, Source: "Cursor API", Error: err.Error()}}
+		p.cached[0].Login = &subscription.LoginTarget{Provider: "cursor"}
+		p.cached[0].LoginRequired = errors.Is(err, errNoLogin)
 		return p.cached, nil
 	}
 	hash := sha256.Sum256([]byte(token))
@@ -61,6 +63,7 @@ func (p *Provider) Load(ctx context.Context) ([]subscription.Account, error) {
 	p.credentialHash = hash
 	p.next = p.now().Add(5 * time.Minute)
 	a := subscription.Account{ID: "cursor:current", Provider: "Cursor", Name: "Cursor", Active: true, Source: "Cursor API"}
+	a.Login = &subscription.LoginTarget{Provider: "cursor"}
 	var id identity
 	err = p.call(ctx, "GetMe", token, &id)
 	if err == nil && !id.valid() {

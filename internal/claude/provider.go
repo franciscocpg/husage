@@ -81,6 +81,7 @@ func (p *Provider) loadCurrent(ctx context.Context, id identity) []subscription.
 	p.cachedID = id.key()
 	p.nextFetch = p.now().Add(5 * time.Minute)
 	a := subscription.Account{ID: id.key(), Provider: "Claude Code", Name: id.Name, Email: id.Email, Active: true, Source: "Claude API"}
+	a.Login = p.loginTarget()
 	if a.Name == "" {
 		a.Name = "Claude subscription"
 	}
@@ -121,6 +122,8 @@ func (p *Provider) loadCurrent(ctx context.Context, id identity) []subscription.
 	}
 	if err != nil {
 		a.Error = err.Error()
+		a.Warning = recoveryWarning(err)
+		a.LoginRequired = requiresLogin(err)
 		a.Stale = len(a.Windows) > 0
 	}
 	p.cached = []subscription.Account{a}
@@ -163,7 +166,7 @@ func (p *Provider) fetch(ctx context.Context, token string) ([]subscription.Wind
 	case http.StatusUnauthorized:
 		return nil, errUsageUnauthorized
 	case http.StatusForbidden:
-		return nil, p.loginError("Claude usage access denied.")
+		return nil, p.loginRecoveryError("Claude usage access denied.", "Usage access denied. Check this profile's account permissions.")
 	case http.StatusTooManyRequests:
 		delay := 5 * time.Minute
 		if n, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && n > 0 && n <= 86400 {

@@ -77,12 +77,17 @@ func (g *Profiles) Load(ctx context.Context) ([]subscription.Account, error) {
 			}
 			if err != nil {
 				a.Error = err.Error()
+				a.Warning = recoveryWarning(err)
+				a.LoginRequired = requiresLogin(err)
 				a.Stale = len(a.Windows) > 0
 			} else {
 				// A logged-out profile must not retain the previous account's usage.
 				delete(g.last, p)
 				a.Error = "No Claude login found for this profile."
+				a.Warning = loginWarning
+				a.LoginRequired = true
 			}
+			a.Login = p.loginTarget()
 			if p.opts.ConfigDir != "" {
 				a.Error += fmt.Sprintf(" Configuration: %s", p.opts.ConfigDir)
 			}

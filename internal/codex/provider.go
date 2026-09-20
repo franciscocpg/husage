@@ -122,6 +122,7 @@ func (p *Provider) Load(ctx context.Context) ([]subscription.Account, error) {
 		name = "Codex"
 	}
 	a := subscription.Account{ID: "codex:home:" + p.opts.Home, Provider: "Codex", Name: name, Active: p.opts.Active, Source: "Codex app-server"}
+	a.Login = &subscription.LoginTarget{Provider: "codex", Directory: p.opts.Home}
 	info, err := os.Stat(p.opts.Home)
 	if err != nil || !info.IsDir() {
 		if p.opts.Optional && os.IsNotExist(err) {
@@ -146,8 +147,10 @@ func (p *Provider) Load(ctx context.Context) ([]subscription.Account, error) {
 				return nil, nil
 			}
 			a.Error = "No ChatGPT login found for this Codex home."
+			a.LoginRequired = true
 		case result.Account.Type != "chatgpt":
 			a.Error = "Codex uses non-subscription authentication here. Sign in with ChatGPT to read subscription limits."
+			a.LoginRequired = true
 		default:
 			a.Windows, err = result.Limits.windows()
 			if err != nil {

@@ -70,6 +70,11 @@ type Model struct {
 	removeChoices                              []subscription.Account
 	removeError                                string
 	removed                                    map[string]bool
+	loginActions                               *LoginActions
+	loginOpen, loginConfirm, loggingIn         bool
+	loginChoices                               []subscription.Account
+	loginIndex, loginScroll                    int
+	loginError                                 string
 }
 
 func New(ctx context.Context, p subscription.Provider, refresh time.Duration, location *time.Location, demo bool) Model {
@@ -90,6 +95,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = max(1, msg.Width)
 		m.height = max(1, msg.Height)
 	case tea.KeyPressMsg:
+		if m.loginOpen {
+			return m.updateLoginKey(msg)
+		}
 		if m.removeOpen {
 			return m.updateRemoveKey(msg)
 		}
@@ -100,6 +108,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateProfileKey(msg)
 		}
 		switch msg.String() {
+		case "l":
+			if m.loginActions != nil && !m.demo {
+				m.loginOpen, m.loginConfirm = true, false
+				m.loginIndex, m.loginScroll, m.loginError = 0, 0, ""
+				m.loginChoices = nil
+				for _, a := range m.accounts {
+					if a.Login != nil && m.loginActions.Command(*a.Login) != "" {
+						m.loginChoices = append(m.loginChoices, a)
+					}
+				}
+				for i, a := range m.loginChoices {
+					if a.LoginRequired {
+						m.loginIndex = i
+						break
+					}
+				}
+			}
 		case "d":
 			if m.removeActions != nil {
 				m.removeOpen, m.removeConfirm = true, false
@@ -179,6 +204,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.loginSucceeded = true
 		return m, m.registerProfile()
+	case loginFinishedMsg:
+		m.loggingIn = false
+		if msg.err != nil {
+			m.loginError = msg.err.Error()
+			m.loginScroll = 1 << 20
+			return m, nil
+		}
+		target := *m.loginChoices[m.loginIndex].Login
+		m.loginOpen = false
+		m.loading = true
+		return m, func() tea.Msg {
+			if m.loginActions.Succeeded != nil {
+				m.loginActions.Succeeded(target)
+			}
+			return m.load()()
+		}
 	case profileAddedMsg:
 		m.savingProfile = false
 		if msg.err != nil {
@@ -233,6 +274,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.now = msg.at
+		if m.loginOpen {
+			return m, m.tick()
+		}
 		if !m.loading {
 			m.loading = true
 			return m, tea.Batch(m.load(), m.tick())
@@ -246,13 +290,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) bodyHeight() int { return max(1, m.height-7) }
 func (m Model) contentWidth() int {
 	w := max(1, m.width-4)
-	if m.profileOpen || m.configOpen || m.removeOpen {
+	if m.profileOpen || m.configOpen || m.removeOpen || m.loginOpen {
 		return min(90, w)
 	}
 	return w
 }
 
 func (m Model) bodyLines() []string {
+	if m.loginOpen {
+		return m.loginLines()
+	}
 	if m.removeOpen {
 		return m.removeLines()
 	}
@@ -276,7 +323,15 @@ func (m Model) bodyLines() []string {
 		}
 		parts = append(parts, accent.Bold(true).Render("Your subscriptions, in one place."), "", dim.Width(w).Render(help))
 	} else {
-		parts = append(parts, renderAccounts(m.accounts, w, m.location, m.now))
+		accounts := append([]subscription.Account{}, m.accounts...)
+		if m.loginActions != nil && !m.demo {
+			for i, a := range accounts {
+				if a.LoginRequired && a.Login != nil && m.loginActions.Command(*a.Login) != "" {
+					accounts[i].Warning = "Login required. Press l to sign in again."
+				}
+			}
+		}
+		parts = append(parts, renderAccounts(accounts, w, m.location, m.now))
 	}
 	return strings.Split(strings.Join(parts, "\n"), "\n")
 }
@@ -305,12 +360,18 @@ func (m Model) View() tea.View {
 	if m.removeOpen {
 		start = min(m.removeScroll, max(0, len(lines)-h))
 	}
+	if m.loginOpen {
+		start = min(m.loginScroll, max(0, len(lines)-h))
+	}
 	end := min(len(lines), start+h)
 	visible := append([]string{}, lines[start:end]...)
 	for len(visible) < h {
 		visible = append(visible, "")
 	}
 	footer := "r refresh   ↑↓ scroll   q quit"
+	if m.loginActions != nil && !m.demo {
+		footer = "l log in   " + footer
+	}
 	if m.configActions != nil {
 		footer = "c config   " + footer
 	}
@@ -373,7 +434,18 @@ func (m Model) View() tea.View {
 			footer += "  pg↑↓ scroll"
 		}
 	}
-	if len(lines) > h && !m.profileOpen && !m.configOpen && !m.removeOpen {
+	if m.loginOpen {
+		footer = "↑↓ select  enter review  esc cancel"
+		if m.loginConfirm {
+			footer = "enter execute login  esc cancel"
+		}
+		if m.loggingIn {
+			footer = "Logging in…"
+		} else if len(lines) > h {
+			footer += "  pg↑↓ scroll"
+		}
+	}
+	if len(lines) > h && !m.profileOpen && !m.configOpen && !m.removeOpen && !m.loginOpen {
 		footer += fmt.Sprintf("   %d–%d/%d", start+1, end, len(lines))
 	}
 	content := []string{header, dim.Render(status), ""}
@@ -394,7 +466,7 @@ func renderShortcuts(text string) string {
 	words := strings.Split(text, " ")
 	for i, word := range words {
 		switch word {
-		case "a", "c", "d", "r", "q", "↑↓", "enter", "esc", "tab", "pg↑↓":
+		case "a", "c", "d", "l", "r", "q", "↑↓", "enter", "esc", "tab", "pg↑↓":
 			words[i] = accent.Bold(true).Render(word)
 		default:
 			words[i] = dim.Render(word)
@@ -493,15 +565,19 @@ func renderAccountSized(a subscription.Account, width, height int, loc *time.Loc
 		}
 		parts = append(parts, base.Bold(true).Render(safe(w.Label)), renderBar(w.Used, inner), dim.Render(resetText(w.ResetsAt, loc, now)))
 	}
-	if a.Error != "" {
+	if a.Warning != "" {
+		parts = append(parts, "", base.Foreground(amber).Width(inner).Render(safe(a.Warning)))
+	} else if a.Error != "" && !(a.Stale && len(a.Windows) > 0) {
 		parts = append(parts, "", base.Foreground(amber).Width(inner).Render(safe(a.Error)))
 	}
-	if a.Stale {
-		parts = append(parts, base.Foreground(amber).Width(inner).Render("Stale data · showing the last successful read."))
+	stale := a.Stale || (!a.UpdatedAt.IsZero() && now.Sub(a.UpdatedAt) >= 10*time.Minute)
+	metadata := safe(a.Source)
+	if stale {
+		metadata += " · stale data"
 	}
-	metadata := safe(a.Source) + " · " + ageText(a.UpdatedAt, now)
+	metadata += " · " + ageText(a.UpdatedAt.In(loc), now)
 	metaStyle := dim
-	if a.Stale || a.UpdatedAt.IsZero() || now.Sub(a.UpdatedAt) > 10*time.Minute {
+	if stale || a.UpdatedAt.IsZero() {
 		metaStyle = base.Foreground(amber)
 	}
 	parts = append(parts, metaStyle.Render(metadata))
@@ -553,13 +629,10 @@ func ageText(t, now time.Time) string {
 	if d < time.Minute {
 		return "updated just now"
 	}
-	if d < 10*time.Minute {
+	if d < time.Hour {
 		return fmt.Sprintf("updated %dm ago", int(d.Minutes()))
 	}
-	if d < time.Hour {
-		return fmt.Sprintf("stale · updated %dm ago", int(d.Minutes()))
-	}
-	return "stale · updated " + t.Local().Format("Jan 2, 3:04pm")
+	return "updated " + t.Format("Jan 2, 3:04pm")
 }
 
 // Account names and remote fields are data, never terminal control sequences.

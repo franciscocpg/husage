@@ -39,17 +39,70 @@ func TestCardSpacingKeepsDashboardBackground(t *testing.T) {
 func TestFailedRefreshLabelsRecentCachedUsageAsStale(t *testing.T) {
 	accounts, _ := (subscription.Demo{}).Load(context.Background())
 	a := accounts[0]
-	a.Error = "Claude rate limit; retry later."
+	a.Error = "No Claude login found. Sign in again: " + strings.Repeat("CLAUDE_CONFIG_DIR=/saved/profile claude auth login ", 20)
 	a.Stale = true
 	view := ansi.Strip(renderAccount(a, 100, time.UTC, a.UpdatedAt.Add(time.Minute)))
-	for _, text := range []string{"38% used", "Claude rate limit", "Stale data · showing the last successful read.", "updated 1m ago"} {
+	for _, text := range []string{"38% used", a.Source + " · stale data · updated 1m ago"} {
 		if !strings.Contains(view, text) {
 			t.Fatalf("cached usage display missing %q", text)
 		}
 	}
+	if strings.Contains(view, "Sign in again") || strings.Contains(view, "CLAUDE_CONFIG_DIR") || strings.Contains(view, "last successful read") || strings.Count(view, "stale data") != 1 {
+		t.Fatal("cached card displayed verbose or duplicate error information", view)
+	}
+	a.Error = ""
+	if lipgloss.Height(view) != lipgloss.Height(renderAccount(a, 100, time.UTC, a.UpdatedAt.Add(time.Minute))) {
+		t.Fatal("cached refresh error changed card height")
+	}
 	a.Stale, a.Error = false, ""
-	if strings.Contains(ansi.Strip(renderAccount(a, 100, time.UTC, a.UpdatedAt)), "Stale data") {
+	if strings.Contains(ansi.Strip(renderAccount(a, 100, time.UTC, a.UpdatedAt)), "stale data") {
 		t.Fatal("successful refresh retained stale warning")
+	}
+}
+
+func TestStaleMetadataUsesDashboardTimezone(t *testing.T) {
+	loc := time.FixedZone("America/Sao_Paulo", -3*60*60)
+	a := subscription.Account{Source: "Claude API", UpdatedAt: time.Date(2026, 9, 20, 6, 39, 0, 0, time.UTC)}
+	for _, failed := range []bool{false, true} {
+		a.Stale = failed
+		view := ansi.Strip(renderAccount(a, 100, loc, a.UpdatedAt.Add(2*time.Hour)))
+		if !strings.Contains(view, "Claude API · stale data · updated Sep 20, 3:39am") || strings.Count(view, "stale") != 1 {
+			t.Fatal(view)
+		}
+	}
+}
+
+func TestAuthenticationWarningReplacesVerboseError(t *testing.T) {
+	accounts, _ := (subscription.Demo{}).Load(context.Background())
+	for _, cached := range []bool{true, false} {
+		a := accounts[0]
+		a.Warning = "Login required. Sign in again for this profile, then press r."
+		a.Error = "Missing credentials. Sign in again: " + strings.Repeat("CLAUDE_CONFIG_DIR=/private/profile claude auth login ", 20)
+		a.Stale = cached
+		if !cached {
+			a.Windows = nil
+			a.UpdatedAt = time.Time{}
+		}
+		for _, width := range []int{40, 80, 120} {
+			view := ansi.Strip(renderAccount(a, width, time.UTC, time.Now()))
+			if !strings.Contains(view, "Login required.") || strings.Contains(view, "CLAUDE_CONFIG_DIR") || strings.Contains(view, "Missing credentials") {
+				t.Fatalf("compact warning missing or verbose error leaked: %s", view)
+			}
+			if lipgloss.Width(view) > width {
+				t.Fatalf("warning exceeds card width %d", width)
+			}
+			if cached && (!strings.Contains(view, "38% used") || strings.Count(view, "stale data") != 1) {
+				t.Fatalf("cached usage or stale status lost: %s", view)
+			}
+		}
+	}
+}
+
+func TestAccountWithoutCachedUsageStillShowsError(t *testing.T) {
+	a := subscription.Account{Source: "Claude API", Error: "Sign in with Claude to load usage."}
+	view := ansi.Strip(renderAccount(a, 100, time.UTC, time.Now()))
+	if !strings.Contains(view, a.Error) || !strings.Contains(view, "waiting for usage") || strings.Contains(view, "stale data") {
+		t.Fatal(view)
 	}
 }
 
@@ -210,9 +263,6 @@ func TestResetAndUntrustedText(t *testing.T) {
 	}
 	if got := safe("name\x1b[2J\n\a"); got != "name" {
 		t.Fatalf("unsafe text: %q", got)
-	}
-	if !strings.Contains(ageText(now, now.Add(time.Hour)), "stale") {
-		t.Fatal("stale usage unlabeled")
 	}
 }
 

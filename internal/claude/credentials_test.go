@@ -23,6 +23,61 @@ func credentialProvider(t *testing.T) (*Provider, *oauthCredentials) {
 	return p, creds
 }
 
+func TestAuthenticationWarningPreservesUsageAndClearsAfterLogin(t *testing.T) {
+	p, creds := credentialProvider(t)
+	creds.ExpiresAt = time.Now().Add(time.Hour).UnixMilli()
+	p.client.Transport = transportFunc(func(*http.Request) (*http.Response, error) {
+		return response(200, `{"five_hour":{"utilization":12}}`), nil
+	})
+	first, err := p.Load(context.Background())
+	if err != nil || len(first) != 1 || first[0].Error != "" {
+		t.Fatalf("initial load: %v %v", first, err)
+	}
+	p.readCredentials = func(context.Context) (oauthCredentials, error) {
+		return oauthCredentials{}, p.loginError("Saved Claude login is incomplete.")
+	}
+	p.nextFetch = time.Time{}
+	failed, _ := p.Load(context.Background())
+	a := failed[0]
+	if a.Warning != loginWarning || !a.Stale || len(a.Windows) != 1 || !a.UpdatedAt.Equal(first[0].UpdatedAt) {
+		t.Fatalf("missing compact authentication warning with cached usage: %+v", a)
+	}
+	if !strings.Contains(a.Error, "CLAUDE_CONFIG_DIR=") {
+		t.Fatal("detailed recovery command lost")
+	}
+	// Fresh native credentials are detected even during the failed-login cooldown.
+	creds.AccessToken = "new-test-login"
+	p.readCredentials = func(context.Context) (oauthCredentials, error) { return *creds, nil }
+	recovered, _ := p.Load(context.Background())
+	if recovered[0].Warning != "" || recovered[0].Error != "" || recovered[0].Stale {
+		t.Fatalf("successful login retained warning: %+v", recovered[0])
+	}
+}
+
+func TestRecoveryWarningsDoNotMisdiagnoseAccessErrors(t *testing.T) {
+	p := New(Options{Home: t.TempDir()})
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{credentialLoginError("Missing tokens"), loginWarning},
+		{fmt.Errorf("wrapped: %w", p.loginError("Missing refresh token")), loginWarning},
+		{errUsageUnauthorized, loginWarning},
+		{os.ErrPermission, ""},
+		{credentialContextError(context.DeadlineExceeded), ""},
+		{errors.New("Cannot read Claude credentials from macOS Keychain"), ""},
+	} {
+		if got := recoveryWarning(tc.err); got != tc.want {
+			t.Errorf("%v: warning %q, want %q", tc.err, got, tc.want)
+		}
+	}
+	p.client.Transport = transportFunc(func(*http.Request) (*http.Response, error) { return response(403, ""), nil })
+	_, err := p.fetch(context.Background(), "test-token")
+	if got := recoveryWarning(err); !strings.Contains(got, "permissions") || strings.Contains(got, "Sign in") {
+		t.Fatalf("access denied misdiagnosed: %q", got)
+	}
+}
+
 func TestExpiredCredentialsAreRenewedAndReloaded(t *testing.T) {
 	p, creds := credentialProvider(t)
 	renewals := 0
@@ -198,5 +253,105 @@ exit "$TEST_EXIT"
 	}
 	if os.Getenv("CLAUDE_CODE_OAUTH_REFRESH_TOKEN") != "unrelated-profile" {
 		t.Fatal("changed parent authentication")
+	}
+}
+
+func TestCredentialStoreFailuresAreDistinctAndRedacted(t *testing.T) {
+	valid := []byte(`{"claudeAiOauth":{"accessToken":"private-access","refreshToken":"private-refresh","scopes":["user:profile"]}}`)
+	for _, tc := range []struct {
+		name     string
+		keyData  []byte
+		keyErr   error
+		fileData []byte
+		fileErr  error
+		want     string
+		login    bool
+	}{
+		{name: "missing both stores", keyErr: os.ErrNotExist, fileErr: os.ErrNotExist, want: "No Claude login found", login: true},
+		{name: "keychain unavailable", keyErr: errors.New("Cannot read Claude credentials from macOS Keychain (exit 36)."), fileErr: os.ErrNotExist, want: "Keychain (exit 36)"},
+		{name: "file permission denied", keyErr: os.ErrNotExist, fileErr: os.ErrPermission, want: "permission denied"},
+		{name: "file read failed", keyErr: os.ErrNotExist, fileErr: errors.New("private diagnostic"), want: "readable file"},
+		{name: "malformed keychain", keyData: []byte(`{"private-access":`), fileData: valid, want: "macOS Keychain contains invalid credential data", login: true},
+		{name: "empty keychain", keyData: []byte{}, fileErr: os.ErrNotExist, want: "Keychain is empty", login: true},
+		{name: "invalid credential type", keyErr: os.ErrNotExist, fileData: []byte(`{"claudeAiOauth":{"accessToken":["private-access"]}}`), want: "credential file contains invalid credential data", login: true},
+		{name: "missing OAuth object", keyData: []byte(`{"other":"private-access"}`), want: "missing OAuth data", login: true},
+		{name: "incomplete saved login", keyData: []byte(`{"claudeAiOauth":{"scopes":["user:profile"],"expiresAt":1}}`), want: "access and refresh tokens are missing", login: true},
+		{name: "native keychain login", keyData: valid},
+		{name: "file fallback after missing item", keyErr: os.ErrNotExist, fileData: valid},
+		{name: "file fallback after denied access", keyErr: errors.New("Keychain access denied"), fileData: valid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fileReads := 0
+			creds, err := readCredentialStores(context.Background(), func(context.Context) ([]byte, error) { return tc.keyData, tc.keyErr }, func() ([]byte, error) { fileReads++; return tc.fileData, tc.fileErr })
+			if tc.want == "" {
+				if err != nil || creds.AccessToken != "private-access" {
+					t.Fatal("valid credential source was not read", err)
+				}
+			} else {
+				if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatal("wrong diagnostic", err)
+				}
+				if strings.Contains(err.Error(), "private") {
+					t.Fatal("diagnostic exposed credential content")
+				}
+				var loginErr credentialLoginError
+				if errors.As(err, &loginErr) != tc.login {
+					t.Fatal("incorrect login recovery advice", err)
+				}
+			}
+			if len(tc.keyData) > 0 && tc.keyErr == nil && fileReads != 0 {
+				t.Fatal("read a stale file fallback over existing Keychain data")
+			}
+		})
+	}
+}
+
+func TestCredentialLookupCancellationDoesNotRequestLogin(t *testing.T) {
+	for _, timeout := range []bool{false, true} {
+		ctx, cancel := context.WithCancel(context.Background())
+		if timeout {
+			cancel()
+			ctx, cancel = context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+		} else {
+			cancel()
+		}
+		_, err := readCredentialStores(ctx, nil, func() ([]byte, error) { t.Fatal("read after cancellation"); return nil, nil })
+		cancel()
+		var loginErr credentialLoginError
+		if err == nil || errors.As(err, &loginErr) {
+			t.Fatal("cancelled lookup reported missing login", err)
+		}
+		expected := "cancelled"
+		if timeout {
+			expected = "timed out"
+		}
+		if !strings.Contains(err.Error(), expected) {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestRefreshTokenCanRecoverMissingAccessToken(t *testing.T) {
+	p, _ := credentialProvider(t)
+	data := []byte(`{"claudeAiOauth":{"refreshToken":"test-refresh","scopes":["user:profile"]}}`)
+	p.readCredentials = func(context.Context) (oauthCredentials, error) { return decodeCredentials(data, "test store") }
+	renewals := 0
+	p.renewCredentials = func(_ context.Context, creds oauthCredentials) error {
+		renewals++
+		if creds.AccessToken != "" || creds.RefreshToken != "test-refresh" {
+			t.Fatal("unexpected renewal input")
+		}
+		data = []byte(`{"claudeAiOauth":{"accessToken":"renewed-token","refreshToken":"new-refresh","scopes":["user:profile"]}}`)
+		return nil
+	}
+	token, err := p.token(context.Background())
+	if err != nil || token != "renewed-token" || renewals != 1 {
+		t.Fatal("refresh-only credentials were not recovered", err)
+	}
+	// Missing both tokens must stop before attempting a renewal without credentials.
+	data = []byte(`{"claudeAiOauth":{"scopes":["user:profile"]}}`)
+	_, err = p.token(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "access and refresh tokens are missing") || renewals != 1 {
+		t.Fatal("incomplete login did not stop safely", err)
 	}
 }

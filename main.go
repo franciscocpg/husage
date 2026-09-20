@@ -80,6 +80,7 @@ func run(args []string, out io.Writer) error {
 	var provider subscription.Provider
 	var profileActions []*tui.ProfileActions
 	var removeActions *tui.RemoveActions
+	var loginActions *tui.LoginActions
 	if *demo {
 		provider = subscription.Demo{}
 	} else {
@@ -99,6 +100,13 @@ func run(args []string, out io.Writer) error {
 		}
 		cursorProvider := cursor.New(cursorOptions)
 		provider = subscription.Combined{group, codexGroup, cursorProvider}
+		loginActions = &tui.LoginActions{
+			Command: profile.ExistingLoginCommand,
+			Login: func(ctx context.Context, target subscription.LoginTarget) tea.ExecCommand {
+				return profile.NewExistingLogin(ctx, target)
+			},
+			Succeeded: provider.(subscription.LoginRefresher).LoginSucceeded,
+		}
 		store := profile.Store{Home: home}
 		profileActions = append(profileActions, &tui.ProfileActions{Directory: store.Directory,
 			Login: func(ctx context.Context, name string) tea.ExecCommand { return profile.NewLogin(ctx, store, name) },
@@ -193,6 +201,7 @@ func run(args []string, out io.Writer) error {
 	model := tui.New(ctx, provider, interval, loc, *demo).
 		WithProfileProviders(profileActions).
 		WithRemoveActions(removeActions).
+		WithLoginActions(loginActions).
 		WithConfigActions(&tui.ConfigActions{Save: configStore.Save})
 	_, err = tea.NewProgram(model, tea.WithContext(ctx), tea.WithOutput(out)).Run()
 	if ctx.Err() != nil {

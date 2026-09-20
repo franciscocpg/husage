@@ -9,6 +9,14 @@ import (
 // Combined keeps each provider's cards visible when another provider fails.
 type Combined []Provider
 
+func (providers Combined) LoginSucceeded(target LoginTarget) {
+	for _, p := range providers {
+		if p, ok := p.(LoginRefresher); ok {
+			p.LoginSucceeded(target)
+		}
+	}
+}
+
 func (providers Combined) Load(ctx context.Context) ([]Account, error) {
 	items := make([][]Account, len(providers))
 	errs := make([]error, len(providers))

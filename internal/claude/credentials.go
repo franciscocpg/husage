@@ -49,26 +49,145 @@ func (p *Provider) credentials(ctx context.Context) (oauthCredentials, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	dir, service := p.credentialLocation()
-	var data []byte
+	var keychain func(context.Context) ([]byte, error)
 	if runtime.GOOS == "darwin" {
-		// Secrets stay in memory; subprocess output is never logged.
-		data, _ = exec.CommandContext(ctx, "/usr/bin/security", "find-generic-password", "-s", service, "-w").Output()
+		keychain = func(ctx context.Context) ([]byte, error) { return readKeychainCredentials(ctx, service) }
 	}
-	if len(data) == 0 {
-		data, _ = os.ReadFile(filepath.Join(dir, ".credentials.json"))
+	creds, err := readCredentialStores(ctx, keychain, func() ([]byte, error) {
+		return os.ReadFile(filepath.Join(dir, ".credentials.json"))
+	})
+	var loginErr credentialLoginError
+	if errors.As(err, &loginErr) {
+		return oauthCredentials{}, p.loginError(err.Error())
 	}
+	return creds, err
+}
+
+// These messages contain only our own descriptions, never native command output
+// or JSON parse errors, which can include credential values.
+type credentialLoginError string
+
+func (e credentialLoginError) Error() string { return string(e) }
+
+func readKeychainCredentials(ctx context.Context, service string) ([]byte, error) {
+	data, err := exec.CommandContext(ctx, "/usr/bin/security", "find-generic-password", "-s", service, "-w").Output()
+	if ctx.Err() != nil {
+		return nil, credentialContextError(ctx.Err())
+	}
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			if exit.ExitCode() == 44 { // errSecItemNotFound
+				return nil, os.ErrNotExist
+			}
+			return nil, fmt.Errorf("Cannot read Claude credentials from macOS Keychain (exit %d). Unlock Keychain and allow access, then retry.", exit.ExitCode())
+		}
+		return nil, errors.New("Cannot open the macOS Keychain reader for Claude credentials. Retry after checking system access.")
+	}
+	return data, nil
+}
+
+func credentialContextError(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return errors.New("Claude credential lookup timed out. Check Keychain access and retry.")
+	}
+	return errors.New("Claude credential lookup was cancelled. Retry the refresh.")
+}
+
+func readCredentialStores(ctx context.Context, keychain func(context.Context) ([]byte, error), file func() ([]byte, error)) (oauthCredentials, error) {
+	if ctx.Err() != nil {
+		return oauthCredentials{}, credentialContextError(ctx.Err())
+	}
+	var keychainErr error
+	if keychain != nil {
+		data, err := keychain(ctx)
+		if ctx.Err() != nil {
+			return oauthCredentials{}, credentialContextError(ctx.Err())
+		}
+		if err == nil && len(data) > 0 {
+			return decodeCredentials(data, "macOS Keychain")
+		}
+		if err == nil {
+			keychainErr = credentialLoginError("Saved Claude login in macOS Keychain is empty.")
+		} else if !errors.Is(err, os.ErrNotExist) {
+			keychainErr = err
+		}
+	}
+	data, err := file()
+	if ctx.Err() != nil {
+		return oauthCredentials{}, credentialContextError(ctx.Err())
+	}
+	if err == nil {
+		return decodeCredentials(data, "the credential file")
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		if keychainErr != nil {
+			return oauthCredentials{}, keychainErr
+		}
+		return oauthCredentials{}, credentialLoginError("No Claude login found for this profile.")
+	}
+	if errors.Is(err, os.ErrPermission) {
+		return oauthCredentials{}, errors.New("Cannot read the Claude credential file: permission denied. Check file permissions, then retry.")
+	}
+	return oauthCredentials{}, errors.New("Cannot read the Claude credential file. Check that it is a readable file, then retry.")
+}
+
+func decodeCredentials(data []byte, source string) (oauthCredentials, error) {
 	var stored struct {
-		OAuth oauthCredentials `json:"claudeAiOauth"`
+		OAuth *oauthCredentials `json:"claudeAiOauth"`
 	}
-	if json.Unmarshal(data, &stored) != nil || stored.OAuth.AccessToken == "" {
-		return oauthCredentials{}, p.loginError("No Claude login found for this profile.")
+	if json.Unmarshal(data, &stored) != nil {
+		return oauthCredentials{}, credentialLoginError("Saved Claude login in " + source + " contains invalid credential data.")
 	}
-	return stored.OAuth, nil
+	if stored.OAuth == nil {
+		return oauthCredentials{}, credentialLoginError("Saved Claude login in " + source + " is missing OAuth data.")
+	}
+	if stored.OAuth.AccessToken == "" && stored.OAuth.RefreshToken == "" {
+		return oauthCredentials{}, credentialLoginError("Saved Claude login in " + source + " is incomplete: access and refresh tokens are missing. Automatic renewal is unavailable.")
+	}
+	return *stored.OAuth, nil
+}
+
+const loginWarning = "Login required. Sign in again for this profile, then press r."
+
+type recoveryError struct {
+	detail        string
+	warning       string
+	loginRequired bool
+}
+
+func (e recoveryError) Error() string { return e.detail }
+
+func requiresLogin(err error) bool {
+	var recovery recoveryError
+	if errors.As(err, &recovery) {
+		return recovery.loginRequired
+	}
+	var login credentialLoginError
+	return errors.As(err, &login) || errors.Is(err, errUsageUnauthorized)
+}
+
+func recoveryWarning(err error) string {
+	var recovery recoveryError
+	if errors.As(err, &recovery) {
+		return recovery.warning
+	}
+	var login credentialLoginError
+	if errors.As(err, &login) || errors.Is(err, errUsageUnauthorized) {
+		return loginWarning
+	}
+	return ""
 }
 
 func (p *Provider) loginError(reason string) error {
+	err := p.loginRecoveryError(reason, loginWarning)
+	err.loginRequired = true
+	return err
+}
+
+func (p *Provider) loginRecoveryError(reason, warning string) recoveryError {
 	command := strings.ReplaceAll(claudecli.LoginCommand(p.opts.ConfigDir, p.opts.SecureDir), " \\\n", " ")
-	return fmt.Errorf("%s Sign in again, then press r: %s", reason, command)
+	return recoveryError{detail: fmt.Sprintf("%s Sign in again, then press r: %s", reason, command), warning: warning}
 }
 
 func (p *Provider) token(ctx context.Context) (string, error) {
@@ -76,7 +195,7 @@ func (p *Provider) token(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !creds.expired(p.now()) {
+	if creds.AccessToken != "" && !creds.expired(p.now()) {
 		return creds.AccessToken, nil
 	}
 	return p.renewToken(ctx, "")
@@ -106,7 +225,7 @@ func (p *Provider) renewToken(ctx context.Context, rejected string) (string, err
 	if err != nil {
 		return "", err
 	}
-	if !creds.expired(p.now()) && creds.AccessToken != rejected {
+	if creds.AccessToken != "" && !creds.expired(p.now()) && creds.AccessToken != rejected {
 		return creds.AccessToken, nil
 	}
 	if creds.RefreshToken == "" || len(creds.Scopes) == 0 {
@@ -123,7 +242,7 @@ func (p *Provider) renewToken(ctx context.Context, rejected string) (string, err
 	if err != nil {
 		return "", err
 	}
-	if creds.expired(p.now()) || creds.AccessToken == rejected {
+	if creds.AccessToken == "" || creds.expired(p.now()) || creds.AccessToken == rejected {
 		return "", p.loginError("Claude did not save renewed credentials for this profile.")
 	}
 	return creds.AccessToken, nil
@@ -132,7 +251,7 @@ func (p *Provider) renewToken(ctx context.Context, rejected string) (string, err
 func (p *Provider) renewWithCLI(ctx context.Context, creds oauthCredentials) error {
 	path, err := exec.LookPath("claude")
 	if err != nil {
-		return p.loginError("Install Claude CLI to renew this expired login automatically.")
+		return p.loginRecoveryError("Install Claude CLI to renew this expired login automatically.", "Install Claude CLI to renew this login, then press r.")
 	}
 	cmd := exec.CommandContext(ctx, path, "auth", "login", "--claudeai")
 	cmd.Env = append(claudecli.Environment(os.Environ(), p.opts.ConfigDir, p.opts.SecureDir),
@@ -148,7 +267,7 @@ func (p *Provider) renewWithCLI(ctx context.Context, creds oauthCredentials) err
 			return errors.New("Claude credential renewal timed out or was cancelled; retrying on the next reload.")
 		}
 		// CLI errors may contain tokens/response bodies. Never forward them.
-		return p.loginError("Claude could not renew this login. The refresh token may have expired or been revoked, or the service may be unavailable.")
+		return p.loginRecoveryError("Claude could not renew this login. The refresh token may have expired or been revoked, or the service may be unavailable.", "Login renewal failed. Retry with r; if it persists, sign in again.")
 	}
 	return nil
 }
