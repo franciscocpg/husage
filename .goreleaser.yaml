@@ -37,3 +37,23 @@ changelog:
 
 release:
   prerelease: auto
+
+homebrew_casks:
+  - name: husage
+    binaries:
+      - husage
+    homepage: "https://github.com/franciscocpg/husage"
+    description: "Terminal dashboard for coding subscription usage"
+    skip_upload: auto
+    repository:
+      owner: franciscocpg
+      name: husage
+      branch: main
+    directory: Casks
+    caveats: "Install the native Claude, Codex, or Cursor CLI for the accounts you want to monitor."
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/husage"]
+          end
