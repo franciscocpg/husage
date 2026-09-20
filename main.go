@@ -24,6 +24,11 @@ import (
 	"github.com/franciscocpg/husage/internal/tui"
 )
 
+var (
+	version = "dev"
+	commit  = "unknown"
+)
+
 func main() {
 	if err := run(os.Args[1:], os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "husage:", err)
@@ -33,6 +38,7 @@ func main() {
 
 func run(args []string, out io.Writer) error {
 	flags := flag.NewFlagSet("husage", flag.ContinueOnError)
+	showVersion := flags.Bool("version", false, "print version and commit, then exit")
 	demo := flags.Bool("demo", false, "show sample subscriptions without accessing local accounts")
 	once := flags.Bool("once", false, "print a snapshot and exit")
 	jsonOut := flags.Bool("json", false, "print subscription data as JSON and exit")
@@ -52,6 +58,10 @@ func run(args []string, out io.Writer) error {
 	}
 	if flags.NArg() != 0 {
 		return fmt.Errorf("unexpected argument %q", flags.Arg(0))
+	}
+	if *showVersion {
+		_, err := fmt.Fprintf(out, "husage %s (commit %s)\n", version, commit)
+		return err
 	}
 	if *refresh < 5*time.Second {
 		return fmt.Errorf("--refresh must be at least 5s")

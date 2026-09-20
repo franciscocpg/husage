@@ -1,5 +1,6 @@
 /husage
 /bin/
+/dist/
 /coverage.out
 .DS_Store
 .crush/

@@ -6,7 +6,9 @@ A quiet, keyboard-driven dashboard for your Claude Code, Codex, and Cursor subsc
 
 ## Run
 
-Requires Go 1.25 or newer and a terminal. Install the native Claude, Codex, or Cursor CLI for the subscriptions you want to monitor.
+Requires a terminal. Install the native Claude, Codex, or Cursor CLI for the subscriptions you want to monitor. Tagged releases provide standalone binaries for Linux, macOS, and Windows (amd64 and arm64) on the [Releases page](https://github.com/franciscocpg/husage/releases); extract the matching archive and put `husage` (`husage.exe` on Windows) on your `PATH`. Go is not required to run a release binary. Use `husage --version` to see its version and commit.
+
+To run from source, install Go 1.25 or newer:
 
 ```sh
 go run .
@@ -187,8 +189,33 @@ make test
 make build
 ```
 
-GitHub Actions runs these checks on pushes to `main` and on pull requests, using the Go version in `go.mod`. Lint checks formatting with `gofmt` and runs `go vet`. Build and race-enabled tests run on Linux and macOS. The workflow follows [GitHub's Go CI guide](https://docs.github.com/pt/actions/tutorials/build-and-test-code/go).
+GitHub Actions runs these checks on pushes to `main` and on pull requests, using the Go version in `go.mod`. Lint checks formatting with `gofmt` and runs `go vet`. CI also validates the GoReleaser configuration. Build and race-enabled tests run on Linux and macOS. The workflow follows [GitHub's Go CI guide](https://docs.github.com/pt/actions/tutorials/build-and-test-code/go).
 
 The `internal/subscription.Provider` interface separates acquisition from rendering. Add another harness by implementing `Load(context.Context)` and returning account names, usage windows, timestamps, and source/error information. The adapters live in `internal/claude`, `internal/codex`, and `internal/cursor`; the Bubble Tea model lives in `internal/tui`.
 
 Tests cover native Claude account discovery, multiple organizations sharing an email, profile lists and overrides, credential isolation, partial failures, duplicate subscriptions, missing and malformed metadata, scoped model limits, refresh cooldowns, rate-limit backoff, terminal widths, scrolling, and timezone conversion. The UI has also been exercised in a real PTY for resize, refresh, scrolling, and clean terminal restoration.
+
+## Releases
+
+[GoReleaser](https://github.com/goreleaser/goreleaser) builds release archives and publishes them through the tag-triggered [GitHub Actions workflow](.github/workflows/release.yml). Pushing a semantic version tag beginning with `v` runs lint and race-enabled tests, then creates a GitHub Release with six platform archives, `checksums.txt` (SHA-256), and a commit changelog. Linux and macOS use `.tar.gz`; Windows uses `.zip`. Tags such as `v0.1.0-rc.1` are marked as prereleases. There is no manual workflow trigger.
+
+Before publishing, install GoReleaser **v2.16.0** (the version pinned in CI), then validate and build a local snapshot:
+
+```sh
+make release-check
+make lint test
+make release-snapshot
+```
+
+Snapshots go into the ignored `dist/` directory and never publish a release. The snapshot command clears previous contents of that directory. Release binaries include their version and commit through Go linker flags; ordinary development builds report `dev`.
+
+After the release changes are merged into `main` and CI passes, publish a new version by tagging that commit (replace `v0.1.0` with the desired unused version):
+
+```sh
+git switch main
+git pull --ff-only origin main
+git tag -a v0.1.0 -m "Release v0.1.0"
+git push origin v0.1.0
+```
+
+The workflow uses GitHub's built-in `GITHUB_TOKEN` with release-write permission; no additional repository secret is needed. Native provider CLIs are not bundled in the archives.

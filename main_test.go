@@ -34,3 +34,13 @@ func TestInvalidOptions(t *testing.T) {
 		}
 	}
 }
+
+func TestVersionDoesNotReadAccountConfiguration(t *testing.T) {
+	var out bytes.Buffer
+	if err := run([]string{"--version", "--profiles", "/missing/profiles.json", "--timezone", "Invalid/Zone"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := out.String(), "husage "+version+" (commit "+commit+")\n"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}

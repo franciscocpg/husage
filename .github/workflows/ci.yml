@@ -25,6 +25,11 @@ jobs:
           cache-dependency-path: go.sum
       - name: Lint
         run: make lint
+      - name: Validate release configuration
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: v2.16.0
+          args: check
 
   test:
     name: Test (${{ matrix.os }})

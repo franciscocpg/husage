@@ -1,4 +1,4 @@
-.PHONY: build lint test run demo
+.PHONY: build lint test run demo release-check release-snapshot
 build:
 	go build -o bin/husage .
 lint:
@@ -14,3 +14,7 @@ run:
 	go run .
 demo:
 	go run . --demo
+release-check:
+	goreleaser check
+release-snapshot:
+	goreleaser release --snapshot --clean
