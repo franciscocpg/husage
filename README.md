@@ -182,9 +182,12 @@ The **a** flow restores the current Cursor CLI account. Separate Cursor logins a
 ## Development
 
 ```sh
+make lint
 make test
-go vet ./...
+make build
 ```
+
+GitHub Actions runs these checks on pushes to `main` and on pull requests, using the Go version in `go.mod`. Lint checks formatting with `gofmt` and runs `go vet`. Build and race-enabled tests run on Linux and macOS. The workflow follows [GitHub's Go CI guide](https://docs.github.com/pt/actions/tutorials/build-and-test-code/go).
 
 The `internal/subscription.Provider` interface separates acquisition from rendering. Add another harness by implementing `Load(context.Context)` and returning account names, usage windows, timestamps, and source/error information. The adapters live in `internal/claude`, `internal/codex`, and `internal/cursor`; the Bubble Tea model lives in `internal/tui`.
 

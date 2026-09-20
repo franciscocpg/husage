@@ -1,6 +1,13 @@
-.PHONY: build test run demo
+.PHONY: build lint test run demo
 build:
 	go build -o bin/husage .
+lint:
+	@files=$$(gofmt -l .) || exit 1; \
+	if [ -n "$$files" ]; then \
+		printf 'Run gofmt on these files:\n%s\n' "$$files"; \
+		exit 1; \
+	fi
+	go vet ./...
 test:
 	go test -race ./...
 run:
