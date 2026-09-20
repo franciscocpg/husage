@@ -7,6 +7,7 @@ lint:
 		printf 'Run gofmt on these files:\n%s\n' "$$files"; \
 		exit 1; \
 	fi
+	sh -n install.sh
 	go vet ./...
 test:
 	go test -race ./...

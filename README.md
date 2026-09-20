@@ -4,9 +4,29 @@ A quiet, keyboard-driven dashboard for your Claude Code, Codex, and Cursor subsc
 
 ![husage showing two sample Claude subscriptions](docs/demo.png)
 
-## Run
+## Install
 
-On macOS, install with Homebrew:
+Install the native Claude, Codex, or Cursor CLI for the subscriptions you want to monitor. Release binaries do not require Go.
+
+### Curl (Linux and macOS)
+
+Install the latest stable release into `~/.local/bin`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/franciscocpg/husage/main/install.sh | sh
+```
+
+The installer detects amd64 or arm64, verifies the archive against the release's SHA-256 checksums, and installs the binary without `sudo`. Ensure `~/.local/bin` is on your `PATH`, or run `~/.local/bin/husage` directly. It does not edit your shell configuration. On macOS it removes the quarantine attribute from the downloaded binary, matching the Homebrew installation.
+
+To choose a release or installation directory:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/franciscocpg/husage/main/install.sh | sh -s -- --version v0.1.0 --bin-dir "$HOME/.local/bin"
+```
+
+Rerun the installer to upgrade. Failed downloads or checksum verification leave an existing installation unchanged. The script requires `curl`, `tar`, and either `sha256sum` or `shasum`, plus standard shell utilities. Windows users should use the ZIP downloads below.
+
+### Homebrew (macOS)
 
 ```sh
 brew tap franciscocpg/husage https://github.com/franciscocpg/husage
@@ -15,25 +35,33 @@ brew install --cask franciscocpg/husage/husage
 
 The cask supports Apple Silicon and Intel Macs. It uses unsigned binaries and removes the macOS quarantine attribute from the installed `husage` binary in its post-install hook. Upgrade with `brew upgrade --cask franciscocpg/husage/husage`.
 
-Requires a terminal. Install the native Claude, Codex, or Cursor CLI for the subscriptions you want to monitor. Tagged releases provide standalone binaries for Linux, macOS, and Windows (amd64 and arm64) on the [Releases page](https://github.com/franciscocpg/husage/releases); extract the matching archive and put `husage` (`husage.exe` on Windows) on your `PATH`. Go is not required to run a release binary. Use `husage --version` to see its version and commit.
+### Manual download
 
-To run from source, install Go 1.25 or newer:
+Download the matching archive from the [Releases page](https://github.com/franciscocpg/husage/releases), verify it against `checksums.txt`, and extract `husage` (`husage.exe` on Windows) into a directory on your `PATH`. Releases include Linux, macOS, and Windows binaries for amd64 and arm64.
 
-```sh
-go run .
-```
+### From source
 
-Or build a standalone binary:
+With Go 1.25 or newer, run these commands from a checkout of this repository:
 
 ```sh
 make build
 ./bin/husage
 ```
 
-Try the interface without accessing accounts or the network:
+You can also run directly with `go run .`.
+
+## Run
+
+Open the dashboard in your terminal:
 
 ```sh
-go run . --demo
+husage
+```
+
+Show the installed version and commit with `husage --version`. Try the interface without accessing accounts or the network:
+
+```sh
+husage --demo
 ```
 
 The dashboard shows account names, email addresses, the active login for each provider, session usage, weekly usage, and model-specific limits when available. Subscriptions are grouped into provider sections with a heading and subscription count. Cards from the same provider appear side by side when space allows, with equal heights within each row. Extra cards wrap to another row; narrow terminals stack the cards vertically. Reset times use your system timezone. Usage bars turn amber at 75% and rose at 90%.
@@ -202,7 +230,7 @@ GitHub Actions runs these checks on pushes to `main` and on pull requests, using
 
 The `internal/subscription.Provider` interface separates acquisition from rendering. Add another harness by implementing `Load(context.Context)` and returning account names, usage windows, timestamps, and source/error information. The adapters live in `internal/claude`, `internal/codex`, and `internal/cursor`; the Bubble Tea model lives in `internal/tui`.
 
-Tests cover native Claude account discovery, multiple organizations sharing an email, profile lists and overrides, credential isolation, partial failures, duplicate subscriptions, missing and malformed metadata, scoped model limits, refresh cooldowns, rate-limit backoff, terminal widths, scrolling, and timezone conversion. The UI has also been exercised in a real PTY for resize, refresh, scrolling, and clean terminal restoration.
+Tests cover installer platform detection, checksum verification, failed-install preservation and cleanup, native Claude account discovery, multiple organizations sharing an email, profile lists and overrides, credential isolation, partial failures, duplicate subscriptions, missing and malformed metadata, scoped model limits, refresh cooldowns, rate-limit backoff, terminal widths, scrolling, and timezone conversion. The UI has also been exercised in a real PTY for resize, refresh, scrolling, and clean terminal restoration.
 
 ## Releases
 
