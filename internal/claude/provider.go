@@ -38,10 +38,15 @@ type Provider struct {
 	renewCredentials func(context.Context, oauthCredentials) error
 	authFailed       bool
 	authFailedToken  string
+	debug            *DebugLog
+	sleepGap         func(prev, now time.Time) time.Duration
+	lastSeen         time.Time
+	awakeSince       time.Time
+	rejectedRefresh  *[32]byte
 }
 
 func New(opts Options) *Provider {
-	return &Provider{opts: opts, url: usageURL, now: time.Now, client: &http.Client{
+	return &Provider{opts: opts, url: usageURL, now: time.Now, sleepGap: systemSleep, client: &http.Client{
 		Timeout: 15 * time.Second,
 		// Credentials must never follow a redirect to another origin.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -49,6 +54,7 @@ func New(opts Options) *Provider {
 }
 
 func (p *Provider) Load(ctx context.Context) ([]subscription.Account, error) {
+	p.observeClock()
 	id, err := readIdentity(p.opts.identityPath())
 	if err != nil && !os.IsNotExist(err) {
 		return nil, errors.New("cannot read Claude account metadata")
@@ -103,6 +109,7 @@ func (p *Provider) loadCurrent(ctx context.Context, id identity) []subscription.
 		var windows []subscription.Window
 		windows, err = p.fetchForIdentity(ctx, id, token)
 		if errors.Is(err, errUsageUnauthorized) && p.readToken == nil {
+			p.debugf(nil, "usage request returned HTTP 401; renewing once")
 			p.authFailed = true
 			p.authFailedToken = token
 			token, err = p.renewToken(ctx, token)
@@ -121,6 +128,10 @@ func (p *Provider) loadCurrent(ctx context.Context, id identity) []subscription.
 		}
 	}
 	if err != nil {
+		p.debugf(nil, "usage load failed: %v", err)
+		if errors.Is(err, errSettling) {
+			p.nextFetch = p.awakeSince.Add(settleAfterWake)
+		}
 		a.Error = err.Error()
 		a.Warning = recoveryWarning(err)
 		a.LoginRequired = requiresLogin(err)

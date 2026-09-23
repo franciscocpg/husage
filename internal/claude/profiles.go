@@ -17,6 +17,7 @@ type Profiles struct {
 	active    Options
 	providers []*Provider
 	last      map[*Provider]subscription.Account
+	debug     *DebugLog
 }
 
 // Add registers an already-created configuration while keeping other accounts'
@@ -29,7 +30,18 @@ func (g *Profiles) Add(opts Options) {
 			return
 		}
 	}
-	g.providers = append(g.providers, New(opts))
+	p := New(opts)
+	p.debug = g.debug
+	g.providers = append(g.providers, p)
+}
+
+func (g *Profiles) SetDebugLog(d *DebugLog) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.debug = d
+	for _, p := range g.providers {
+		p.debug = d
+	}
 }
 
 func NewProfiles(active Options, options []Options) *Profiles {
