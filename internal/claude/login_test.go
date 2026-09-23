@@ -11,7 +11,7 @@ import (
 
 func TestLoginRefreshUsesExactClaudeStoreAndKeepsOtherCooldowns(t *testing.T) {
 	p, creds := credentialProvider(t)
-	creds.ExpiresAt = time.Now().Add(time.Hour).UnixMilli()
+	creds.ExpiresAt = time.Now().Add(2 * time.Hour).UnixMilli()
 	p.opts.SecureDir = t.TempDir()
 	calls := 0
 	p.client.Transport = transportFunc(func(*http.Request) (*http.Response, error) {

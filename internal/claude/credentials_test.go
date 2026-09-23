@@ -25,7 +25,7 @@ func credentialProvider(t *testing.T) (*Provider, *oauthCredentials) {
 
 func TestAuthenticationWarningPreservesUsageAndClearsAfterLogin(t *testing.T) {
 	p, creds := credentialProvider(t)
-	creds.ExpiresAt = time.Now().Add(time.Hour).UnixMilli()
+	creds.ExpiresAt = time.Now().Add(2 * time.Hour).UnixMilli()
 	p.client.Transport = transportFunc(func(*http.Request) (*http.Response, error) {
 		return response(200, `{"five_hour":{"utilization":12}}`), nil
 	})
@@ -87,7 +87,7 @@ func TestExpiredCredentialsAreRenewedAndReloaded(t *testing.T) {
 			t.Fatal("wrong profile refreshed")
 		}
 		creds.AccessToken = "renewed-test-token"
-		creds.ExpiresAt = time.Now().Add(time.Hour).UnixMilli()
+		creds.ExpiresAt = time.Now().Add(2 * time.Hour).UnixMilli()
 		return nil
 	}
 	requests := 0
@@ -130,7 +130,7 @@ func TestRenewalFailureBackoffAndManualLoginRecovery(t *testing.T) {
 		t.Fatal("retried failed renewal during cooldown")
 	}
 	creds.AccessToken = "manually-renewed"
-	creds.ExpiresAt = time.Now().Add(time.Hour).UnixMilli()
+	creds.ExpiresAt = time.Now().Add(2 * time.Hour).UnixMilli()
 	a, err := p.Load(context.Background())
 	if err != nil || a[0].Error != "" || requests != 1 || renewals != 1 {
 		t.Fatal("manual login required restart", a, err)
@@ -153,7 +153,7 @@ func TestRenewalPrerequisitesAndConcurrentRenewal(t *testing.T) {
 				_, service := p.credentialLocation()
 				write(t, filepath.Join(p.opts.Home, ".config", "husage", "locks", service+".lock"), "another writer")
 			case "already renewed":
-				creds.ExpiresAt = time.Now().Add(time.Hour).UnixMilli()
+				creds.ExpiresAt = time.Now().Add(2 * time.Hour).UnixMilli()
 			case "cancelled":
 				var cancel context.CancelFunc
 				ctx, cancel = context.WithCancel(ctx)
@@ -175,7 +175,7 @@ func TestUnauthorizedRetriesOnceAndForbiddenDoesNotRenew(t *testing.T) {
 	for _, status := range []int{401, 403} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			p, creds := credentialProvider(t)
-			creds.ExpiresAt = time.Now().Add(time.Hour).UnixMilli()
+			creds.ExpiresAt = time.Now().Add(2 * time.Hour).UnixMilli()
 			calls, renewals := 0, 0
 			p.renewCredentials = func(context.Context, oauthCredentials) error {
 				renewals++
@@ -201,7 +201,7 @@ func TestAccountChangedDuringRenewalDoesNotFetchWrongUsage(t *testing.T) {
 	p, creds := credentialProvider(t)
 	p.renewCredentials = func(context.Context, oauthCredentials) error {
 		creds.AccessToken = "new-token"
-		creds.ExpiresAt = time.Now().Add(time.Hour).UnixMilli()
+		creds.ExpiresAt = time.Now().Add(2 * time.Hour).UnixMilli()
 		write(t, p.opts.identityPath(), `{"oauthAccount":{"accountUuid":"other","organizationUuid":"other"}}`)
 		return nil
 	}

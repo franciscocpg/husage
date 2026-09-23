@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -150,6 +149,8 @@ func decodeCredentials(data []byte, source string) (oauthCredentials, error) {
 
 const loginWarning = "Login required. Sign in again for this profile, then press r."
 
+const rejectedRefreshReason = "Claude rejected this login's refresh token; it has expired or been revoked."
+
 type recoveryError struct {
 	detail        string
 	warning       string
@@ -196,18 +197,35 @@ func (p *Provider) token(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if creds.AccessToken != "" && !creds.expired(p.now()) {
+		if p.expiresSoon(creds) && !p.settling() && !p.refreshRejectedBefore(creds) {
+			if token, err := p.renew(ctx, "", true); err == nil {
+				return token, nil
+			}
+		}
 		return creds.AccessToken, nil
 	}
 	return p.renewToken(ctx, "")
 }
 
+func (p *Provider) refreshRejectedBefore(c oauthCredentials) bool {
+	return p.rejectedRefresh != nil && *p.rejectedRefresh == fingerprint(c.RefreshToken)
+}
+
 // renewToken delegates the exchange and persistence to Claude's documented
 // non-interactive login flow. A rejected token forces one renewal after a 401.
 func (p *Provider) renewToken(ctx context.Context, rejected string) (string, error) {
+	return p.renew(ctx, rejected, false)
+}
+
+func (p *Provider) renew(ctx context.Context, rejected string, early bool) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
 		return "", err
+	}
+	if p.settling() {
+		p.debugf(nil, "renewal postponed: system woke at %s", p.awakeSince.Format(time.RFC3339))
+		return "", errSettling
 	}
 	_, service := p.credentialLocation()
 	lockDir := filepath.Join(p.opts.Home, ".config", "husage", "locks")
@@ -217,31 +235,55 @@ func (p *Provider) renewToken(ctx context.Context, rejected string) (string, err
 	lockPath := filepath.Join(lockDir, service+".lock")
 	lock, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
+		p.debugf(nil, "renewal skipped: lock %s is held", lockPath)
 		return "", errors.New("Credential renewal is locked by another husage process or an interrupted renewal. Retry after it finishes; remove the husage credential lock only if no renewal is running.")
 	}
 	defer func() { lock.Close(); os.Remove(lockPath) }()
 	// Another husage/Claude process may have renewed the token since we read it.
 	creds, err := p.credentials(ctx)
 	if err != nil {
+		p.debugf(nil, "renewal aborted: %v", err)
 		return "", err
 	}
-	if creds.AccessToken != "" && !creds.expired(p.now()) && creds.AccessToken != rejected {
+	if creds.AccessToken != "" && !creds.expired(p.now()) && creds.AccessToken != rejected && !(early && p.expiresSoon(creds)) {
+		p.debugf(nil, "renewal not needed: credentials were renewed elsewhere")
 		return creds.AccessToken, nil
 	}
+	reason := "access token expired or missing"
+	if rejected != "" {
+		reason = "usage API rejected the access token"
+	} else if early {
+		reason = "access token expires within " + renewAhead.String()
+	}
+	p.debugf(creds.secrets(), "renewal starting (%s): %s", reason, describeCredentials(creds))
 	if creds.RefreshToken == "" || len(creds.Scopes) == 0 {
+		p.debugf(nil, "renewal impossible: refresh token or scopes missing")
 		return "", p.loginError("Claude credentials cannot be renewed automatically (refresh token or scopes missing).")
+	}
+	if p.refreshRejectedBefore(creds) {
+		p.debugf(nil, "renewal skipped: Claude already rejected this refresh token")
+		return "", p.loginError(rejectedRefreshReason)
 	}
 	renew := p.renewCredentials
 	if renew == nil {
 		renew = p.renewWithCLI
 	}
 	if err := renew(ctx, creds); err != nil {
+		p.debugf(creds.secrets(), "renewal failed: %v", err)
+		if requiresLogin(err) {
+			fp := fingerprint(creds.RefreshToken)
+			p.rejectedRefresh = &fp
+		}
 		return "", err
 	}
+	previous := creds
 	creds, err = p.credentials(ctx)
 	if err != nil {
+		p.debugf(previous.secrets(), "cannot read renewed credentials: %v", err)
 		return "", err
 	}
+	p.debugf(append(previous.secrets(), creds.secrets()...), "credentials after renewal: %s access_changed=%t refresh_changed=%t",
+		describeCredentials(creds), creds.AccessToken != previous.AccessToken, creds.RefreshToken != previous.RefreshToken)
 	if creds.AccessToken == "" || creds.expired(p.now()) || creds.AccessToken == rejected {
 		return "", p.loginError("Claude did not save renewed credentials for this profile.")
 	}
@@ -260,14 +302,54 @@ func (p *Provider) renewWithCLI(ctx context.Context, creds oauthCredentials) err
 	// Authentication does not need the user's project, terminal, or prompts.
 	cmd.Dir = p.opts.Home
 	cmd.Stdin = nil
-	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
+	output := &cappedBuffer{limit: 64 << 10}
+	cmd.Stdout, cmd.Stderr = output, output
 	cmd.WaitDelay = time.Second
-	if err := cmd.Run(); err != nil {
+	started := p.now()
+	err = cmd.Run()
+	if p.debug != nil {
+		result := "exit status 0"
+		if err != nil {
+			result = err.Error()
+		}
+		p.debugf(creds.secrets(), "claude auth login (%s, %s) finished after %s: %s\noutput:\n%s",
+			path, p.cliVersion(ctx, path), p.now().Sub(started).Round(time.Millisecond), result, output)
+	}
+	if err != nil {
 		if ctx.Err() != nil {
 			return errors.New("Claude credential renewal timed out or was cancelled; retrying on the next reload.")
+		}
+		if refreshRejected(output.String()) {
+			return p.loginError(rejectedRefreshReason)
 		}
 		// CLI errors may contain tokens/response bodies. Never forward them.
 		return p.loginRecoveryError("Claude could not renew this login. The refresh token may have expired or been revoked, or the service may be unavailable.", "Login renewal failed. Retry with r; if it persists, sign in again.")
 	}
 	return nil
+}
+
+func (c oauthCredentials) secrets() []string { return []string{c.AccessToken, c.RefreshToken} }
+
+func (p *Provider) debugf(secrets []string, format string, args ...any) {
+	if p.debug == nil {
+		return
+	}
+	profile := p.opts.ConfigDir
+	if profile == "" {
+		profile = "current"
+	}
+	p.debug.printf(profile, secrets, format, args...)
+}
+
+func (p *Provider) cliVersion(ctx context.Context, path string) string {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, "--version")
+	cmd.Env = claudecli.Environment(os.Environ(), p.opts.ConfigDir, p.opts.SecureDir)
+	cmd.Dir = p.opts.Home
+	out, err := cmd.Output()
+	if err != nil {
+		return "version unknown"
+	}
+	return strings.TrimSpace(string(out))
 }

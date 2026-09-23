@@ -50,6 +50,7 @@ func run(args []string, out io.Writer) error {
 	flags.Var(&codexDirs, "codex-home", "Codex home directory; repeat for multiple subscriptions, or use current for CODEX_HOME")
 	profilesPath := flags.String("profiles", "", "JSON profile list (default: ~/.config/husage/profiles.json, if present)")
 	width := flags.Int("width", 80, "snapshot width (20–200 columns)")
+	debug := flags.Bool("debug", false, "append redacted Claude login renewal diagnostics to ~/.config/husage/debug.log")
 	if err := flags.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return nil
@@ -89,6 +90,14 @@ func run(args []string, out io.Writer) error {
 			return err
 		}
 		group := claude.NewProfiles(active, profiles)
+		if *debug {
+			debugFile, err := openDebugLog(home)
+			if err != nil {
+				return err
+			}
+			defer debugFile.Close()
+			group.SetDebugLog(claude.NewDebugLog(debugFile))
+		}
 		codexOptions, err := codexProfiles(home, codexDirs, *profilesPath)
 		if err != nil {
 			return err
@@ -208,6 +217,26 @@ func run(args []string, out io.Writer) error {
 		return nil
 	}
 	return err
+}
+
+func debugLogPath(home string) string {
+	return filepath.Join(home, ".config", "husage", "debug.log")
+}
+
+func openDebugLog(home string) (*os.File, error) {
+	path := debugLogPath(home)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return nil, fmt.Errorf("create debug log directory: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("open debug log: %w", err)
+	}
+	if err := f.Chmod(0600); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("secure debug log: %w", err)
+	}
+	return f, nil
 }
 
 func expand(p, home string) string {
