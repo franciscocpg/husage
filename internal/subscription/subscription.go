@@ -6,6 +6,11 @@ import (
 	"time"
 )
 
+const (
+	refreshJitter = 10 * time.Second
+	FetchCooldown = 5*time.Minute - refreshJitter
+)
+
 type Window struct {
 	Label    string    `json:"label"`
 	Used     float64   `json:"used_percent"`

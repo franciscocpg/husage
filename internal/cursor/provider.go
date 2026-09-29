@@ -61,7 +61,7 @@ func (p *Provider) Load(ctx context.Context) ([]subscription.Account, error) {
 		p.cached = nil
 	}
 	p.credentialHash = hash
-	p.next = p.now().Add(5 * time.Minute)
+	p.next = p.now().Add(subscription.FetchCooldown)
 	a := subscription.Account{ID: "cursor:current", Provider: "Cursor", Name: "Cursor", Active: true, Source: "Cursor API"}
 	a.Login = &subscription.LoginTarget{Provider: "cursor"}
 	var id identity

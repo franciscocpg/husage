@@ -115,7 +115,7 @@ func (p *Provider) Load(ctx context.Context) ([]subscription.Account, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	p.next = p.now().Add(5 * time.Minute)
+	p.next = p.now().Add(subscription.FetchCooldown)
 	defer func() { p.authStamp = credentialStamp(p.opts.Home) }()
 	name := strings.TrimPrefix(filepath.Base(p.opts.Home), ".")
 	if name == "codex" {

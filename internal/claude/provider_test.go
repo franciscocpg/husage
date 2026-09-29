@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/franciscocpg/husage/internal/subscription"
 )
 
 type transportFunc func(*http.Request) (*http.Response, error)
@@ -78,13 +80,13 @@ func TestStaleUsageNamesTransientFailureAndRetryTime(t *testing.T) {
 		reason string
 		retry  time.Duration
 	}{
-		{"unavailable", func() (*http.Response, error) { return response(503, ""), nil }, "API temporarily unavailable", 5 * time.Minute},
+		{"unavailable", func() (*http.Response, error) { return response(503, ""), nil }, "API temporarily unavailable", subscription.FetchCooldown},
 		{"rate limited", func() (*http.Response, error) {
 			r := response(429, "")
 			r.Header.Set("Retry-After", "900")
 			return r, nil
 		}, "rate limited", 15 * time.Minute},
-		{"unreachable", func() (*http.Response, error) { return nil, errors.New("no route to host") }, "API unreachable", 5 * time.Minute},
+		{"unreachable", func() (*http.Response, error) { return nil, errors.New("no route to host") }, "API unreachable", subscription.FetchCooldown},
 		{"not found", func() (*http.Response, error) { return response(404, ""), nil }, "", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -116,6 +118,31 @@ func TestStaleUsageNamesTransientFailureAndRetryTime(t *testing.T) {
 				t.Fatalf("successful refresh kept stale reason %q", a.StaleReason)
 			}
 		})
+	}
+}
+
+func TestReloadEveryFiveMinutesFetchesAfterLateRead(t *testing.T) {
+	p := New(Options{})
+	tick := time.Date(2026, 9, 29, 14, 26, 0, 0, time.UTC)
+	now := tick.Add(3 * time.Second)
+	p.now = func() time.Time { return now }
+	p.readToken = func(context.Context) (string, error) { return "test-token", nil }
+	calls := 0
+	p.client.Transport = transportFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		return response(200, `{"five_hour":{"utilization":15}}`), nil
+	})
+	id := identity{AccountID: "user", OrgID: "personal"}
+	p.loadCurrent(context.Background(), id)
+	now = tick.Add(4 * time.Minute)
+	p.loadCurrent(context.Background(), id)
+	if calls != 1 {
+		t.Fatal("refetched during cooldown")
+	}
+	now = tick.Add(5 * time.Minute)
+	p.loadCurrent(context.Background(), id)
+	if calls != 2 {
+		t.Fatal("reload five minutes after a late read skipped the fetch")
 	}
 }
 
