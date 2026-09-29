@@ -108,14 +108,15 @@ type Provider struct {
 func New(opts Options) *Provider { return &Provider{opts: opts, now: time.Now, read: readUsage} }
 
 func (p *Provider) Load(ctx context.Context) ([]subscription.Account, error) {
+	start := subscription.ReloadStart(ctx, p.now())
 	stamp := credentialStamp(p.opts.Home)
-	if stamp == p.authStamp && p.now().Before(p.next) {
+	if stamp == p.authStamp && start.Before(p.next) {
 		return p.cached, nil
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	p.next = p.now().Add(subscription.FetchCooldown)
+	p.next = start.Add(subscription.FetchCooldown)
 	defer func() { p.authStamp = credentialStamp(p.opts.Home) }()
 	name := strings.TrimPrefix(filepath.Base(p.opts.Home), ".")
 	if name == "codex" {

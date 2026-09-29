@@ -115,6 +115,36 @@ func TestStaleMetadataExplainsTransientFailure(t *testing.T) {
 	}
 }
 
+func TestRetryTimeShowsTheReloadThatRetries(t *testing.T) {
+	loc := time.FixedZone("America/Sao_Paulo", -3*60*60)
+	tick := time.Date(2026, 9, 29, 14, 26, 0, 0, time.UTC)
+	a := subscription.Account{Source: "Claude API", UpdatedAt: tick.Add(-12 * time.Minute), Stale: true, StaleReason: "API temporarily unavailable", RetryAt: tick.Add(subscription.FetchCooldown)}
+	for _, tc := range []struct {
+		every time.Duration
+		want  string
+	}{
+		{5 * time.Minute, "retrying 11:31am"},
+		{15 * time.Minute, "retrying 11:41am"},
+		{2 * time.Minute, "retrying 11:32am"},
+	} {
+		m := New(context.Background(), nil, tc.every, loc, false)
+		m.width, m.loaded, m.accounts, m.now = 200, true, []subscription.Account{a}, tick
+		m.nextReload = tick.Add(tc.every)
+		if view := ansi.Strip(strings.Join(m.bodyLines(), "\n")); !strings.Contains(view, tc.want) {
+			t.Errorf("reload every %s: %s", tc.every, view)
+		}
+	}
+}
+
+func TestSnapshotOmitsRetryTime(t *testing.T) {
+	updated := time.Date(2026, 9, 29, 14, 14, 0, 0, time.UTC)
+	a := subscription.Account{Provider: "Claude Code", Source: "Claude API", UpdatedAt: updated, Stale: true, StaleReason: "API temporarily unavailable", RetryAt: updated.Add(17 * time.Minute)}
+	view := ansi.Strip(Snapshot([]subscription.Account{a}, 200, time.UTC, updated.Add(12*time.Minute), true))
+	if !strings.Contains(view, "Claude API · stale data · API temporarily unavailable · updated 12m ago") || strings.Contains(view, "retrying") {
+		t.Fatal(view)
+	}
+}
+
 func TestAuthenticationWarningReplacesVerboseError(t *testing.T) {
 	accounts, _ := (subscription.Demo{}).Load(context.Background())
 	for _, cached := range []bool{true, false} {

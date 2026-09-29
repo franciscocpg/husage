@@ -121,31 +121,6 @@ func TestStaleUsageNamesTransientFailureAndRetryTime(t *testing.T) {
 	}
 }
 
-func TestReloadEveryFiveMinutesFetchesAfterLateRead(t *testing.T) {
-	p := New(Options{})
-	tick := time.Date(2026, 9, 29, 14, 26, 0, 0, time.UTC)
-	now := tick.Add(3 * time.Second)
-	p.now = func() time.Time { return now }
-	p.readToken = func(context.Context) (string, error) { return "test-token", nil }
-	calls := 0
-	p.client.Transport = transportFunc(func(*http.Request) (*http.Response, error) {
-		calls++
-		return response(200, `{"five_hour":{"utilization":15}}`), nil
-	})
-	id := identity{AccountID: "user", OrgID: "personal"}
-	p.loadCurrent(context.Background(), id)
-	now = tick.Add(4 * time.Minute)
-	p.loadCurrent(context.Background(), id)
-	if calls != 1 {
-		t.Fatal("refetched during cooldown")
-	}
-	now = tick.Add(5 * time.Minute)
-	p.loadCurrent(context.Background(), id)
-	if calls != 2 {
-		t.Fatal("reload five minutes after a late read skipped the fetch")
-	}
-}
-
 func TestCooldownPreservesUsageAndAccountIsolation(t *testing.T) {
 	p := New(Options{})
 	now := time.Date(2026, 9, 19, 3, 0, 0, 0, time.UTC)

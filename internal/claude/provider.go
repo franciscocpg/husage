@@ -69,8 +69,9 @@ func (p *Provider) Load(ctx context.Context) ([]subscription.Account, error) {
 }
 
 func (p *Provider) loadCurrent(ctx context.Context, id identity) []subscription.Account {
+	start := subscription.ReloadStart(ctx, p.now())
 	// A new login/account must not inherit another account's usage or cooldown.
-	if p.cachedID == id.key() && p.now().Before(p.nextFetch) {
+	if p.cachedID == id.key() && start.Before(p.nextFetch) {
 		// A user may have completed login since our last failed attempt. Detect
 		// that locally so manual reload works without restarting or waiting.
 		if !p.authFailed || p.readToken != nil {
@@ -85,7 +86,7 @@ func (p *Provider) loadCurrent(ctx context.Context, id identity) []subscription.
 		p.cached = nil
 	}
 	p.cachedID = id.key()
-	p.nextFetch = p.now().Add(subscription.FetchCooldown)
+	p.nextFetch = start.Add(subscription.FetchCooldown)
 	a := subscription.Account{ID: id.key(), Provider: "Claude Code", Name: id.Name, Email: id.Email, Active: true, Source: "Claude API"}
 	a.Login = p.loginTarget()
 	if a.Name == "" {
@@ -199,13 +200,15 @@ func (p *Provider) fetch(ctx context.Context, token string) ([]subscription.Wind
 	case http.StatusForbidden:
 		return nil, p.loginRecoveryError("Claude usage access denied.", "Usage access denied. Check this profile's account permissions.")
 	case http.StatusTooManyRequests:
-		delay := subscription.FetchCooldown
+		var delay time.Duration
 		if n, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && n > 0 && n <= 86400 {
-			delay = max(delay, time.Duration(n)*time.Second)
+			delay = time.Duration(n) * time.Second
 		} else if t, err := http.ParseTime(resp.Header.Get("Retry-After")); err == nil {
-			delay = max(delay, t.Sub(p.now()))
+			delay = t.Sub(p.now())
 		}
-		p.nextFetch = p.now().Add(delay)
+		if retry := p.now().Add(delay); retry.After(p.nextFetch) {
+			p.nextFetch = retry
+		}
 		return nil, transientError{fmt.Sprintf("Claude rate limit; retry after %s.", p.nextFetch.Local().Format("3:04pm")), "rate limited"}
 	default:
 		detail := fmt.Sprintf("Claude usage unavailable (HTTP %d). Retrying in 5 minutes.", resp.StatusCode)

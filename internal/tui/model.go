@@ -85,6 +85,7 @@ type Model struct {
 	demo                                       bool
 	width, height, offset                      int
 	refresh                                    time.Duration
+	nextReload                                 time.Time
 	tickGeneration                             uint64
 	location                                   *time.Location
 	now                                        time.Time
@@ -117,7 +118,8 @@ type Model struct {
 }
 
 func New(ctx context.Context, p subscription.Provider, refresh time.Duration, location *time.Location, demo bool) Model {
-	return Model{ctx: ctx, provider: p, refresh: refresh, location: location, demo: demo, width: 80, height: 24, loading: true, now: time.Now()}
+	now := time.Now()
+	return Model{ctx: ctx, provider: p, refresh: refresh, location: location, demo: demo, width: 80, height: 24, loading: true, now: now, nextReload: now.Add(refresh)}
 }
 
 func (m Model) load() tea.Cmd {
@@ -307,12 +309,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// A previous timer may still fire. Its generation must not reload or
 		// schedule another timer after the interval changes.
 		m.tickGeneration++
+		m.nextReload = time.Now().Add(m.refresh)
 		return m, m.tick()
 	case tickMsg:
 		if msg.generation != m.tickGeneration {
 			return m, nil
 		}
 		m.now = msg.at
+		m.nextReload = msg.at.Add(m.refresh)
 		if m.loginOpen {
 			return m, m.tick()
 		}
@@ -368,6 +372,11 @@ func (m Model) bodyLines() []string {
 				if a.LoginRequired && a.Login != nil && m.loginActions.Command(*a.Login) != "" {
 					accounts[i].Warning = "Login required. Press l to sign in again."
 				}
+			}
+		}
+		for i, a := range accounts {
+			if !a.RetryAt.IsZero() && !m.nextReload.IsZero() {
+				accounts[i].RetryAt = retryReload(a.RetryAt, m.nextReload, m.refresh)
 			}
 		}
 		parts = append(parts, dashboard.renderAccounts(accounts, w, m.location, m.now))
@@ -613,8 +622,11 @@ func (t theme) renderAccountSized(a subscription.Account, width, height int, loc
 	metadata := safe(a.Source)
 	if stale {
 		metadata += " · stale data"
-		if a.StaleReason != "" && !a.RetryAt.IsZero() {
-			metadata += " · " + safe(a.StaleReason) + ", retrying " + clockText(a.RetryAt, loc, now)
+		if a.StaleReason != "" {
+			metadata += " · " + safe(a.StaleReason)
+			if !a.RetryAt.IsZero() {
+				metadata += ", retrying " + clockText(a.RetryAt, loc, now)
+			}
 		}
 	}
 	metadata += " · " + ageText(a.UpdatedAt.In(loc), now)
@@ -666,6 +678,13 @@ func clockText(t time.Time, loc *time.Location, now time.Time) string {
 	return local.Format("Jan 2 at 3:04pm")
 }
 
+func retryReload(retryAt, nextReload time.Time, every time.Duration) time.Time {
+	if nextReload.Before(retryAt) && every > 0 {
+		nextReload = nextReload.Add((retryAt.Sub(nextReload) + every - 1) / every * every)
+	}
+	return nextReload
+}
+
 func ageText(t, now time.Time) string {
 	if t.IsZero() {
 		return "waiting for usage"
@@ -693,6 +712,10 @@ func safe(s string) string {
 // Snapshot renders the same cards without starting an interactive terminal.
 func Snapshot(accounts []subscription.Account, width int, loc *time.Location, now time.Time, darkBackground bool) string {
 	t := snapshotTheme(darkBackground)
+	accounts = append([]subscription.Account{}, accounts...)
+	for i := range accounts {
+		accounts[i].RetryAt = time.Time{}
+	}
 	parts := []string{t.accent.Bold(true).Render("◈ husage") + t.dim.Render("  /  Claude Code · Codex · Cursor"), ""}
 	parts = append(parts, t.renderAccounts(accounts, max(20, width), loc, now))
 	if len(accounts) == 0 {

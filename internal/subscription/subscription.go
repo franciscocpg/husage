@@ -7,8 +7,8 @@ import (
 )
 
 const (
-	refreshJitter = 10 * time.Second
-	FetchCooldown = 5*time.Minute - refreshJitter
+	cooldownSlack = 10 * time.Second
+	FetchCooldown = 5*time.Minute - cooldownSlack
 )
 
 type Window struct {
