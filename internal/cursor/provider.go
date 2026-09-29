@@ -33,6 +33,7 @@ func New(opts Options) *Provider {
 func (p *Provider) Load(ctx context.Context) ([]subscription.Account, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	start := subscription.ReloadStart(ctx, p.now())
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -54,14 +55,14 @@ func (p *Provider) Load(ctx context.Context) ([]subscription.Account, error) {
 		return p.cached, nil
 	}
 	hash := sha256.Sum256([]byte(token))
-	if hash == p.credentialHash && p.now().Before(p.next) {
+	if hash == p.credentialHash && start.Before(p.next) {
 		return p.cached, nil
 	}
 	if hash != p.credentialHash {
 		p.cached = nil
 	}
 	p.credentialHash = hash
-	p.next = p.now().Add(5 * time.Minute)
+	p.next = start.Add(subscription.FetchCooldown)
 	a := subscription.Account{ID: "cursor:current", Provider: "Cursor", Name: "Cursor", Active: true, Source: "Cursor API"}
 	a.Login = &subscription.LoginTarget{Provider: "cursor"}
 	var id identity

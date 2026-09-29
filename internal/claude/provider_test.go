@@ -2,6 +2,7 @@ package claude
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/franciscocpg/husage/internal/subscription"
 )
 
 type transportFunc func(*http.Request) (*http.Response, error)
@@ -67,6 +70,54 @@ func TestUsageFailuresDoNotLeakResponseBodies(t *testing.T) {
 		if _, err := p.fetch(context.Background(), "x"); err == nil {
 			t.Errorf("accepted invalid payload %s", body)
 		}
+	}
+}
+
+func TestStaleUsageNamesTransientFailureAndRetryTime(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		fail   func() (*http.Response, error)
+		reason string
+		retry  time.Duration
+	}{
+		{"unavailable", func() (*http.Response, error) { return response(503, ""), nil }, "API temporarily unavailable", subscription.FetchCooldown},
+		{"rate limited", func() (*http.Response, error) {
+			r := response(429, "")
+			r.Header.Set("Retry-After", "900")
+			return r, nil
+		}, "rate limited", 15 * time.Minute},
+		{"unreachable", func() (*http.Response, error) { return nil, errors.New("no route to host") }, "API unreachable", subscription.FetchCooldown},
+		{"not found", func() (*http.Response, error) { return response(404, ""), nil }, "", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := New(Options{})
+			now := time.Date(2026, 9, 29, 14, 26, 0, 0, time.UTC)
+			p.now = func() time.Time { return now }
+			p.readToken = func(context.Context) (string, error) { return "test-token", nil }
+			failing := false
+			p.client.Transport = transportFunc(func(*http.Request) (*http.Response, error) {
+				if failing {
+					return tc.fail()
+				}
+				return response(200, `{"five_hour":{"utilization":15}}`), nil
+			})
+			id := identity{AccountID: "user", OrgID: "personal"}
+			p.loadCurrent(context.Background(), id)
+			failing, now = true, now.Add(5*time.Minute)
+			a := p.loadCurrent(context.Background(), id)[0]
+			var retryAt time.Time
+			if tc.retry > 0 {
+				retryAt = now.Add(tc.retry)
+			}
+			if !a.Stale || a.StaleReason != tc.reason || !a.RetryAt.Equal(retryAt) {
+				t.Fatalf("stale=%v reason=%q retry=%v", a.Stale, a.StaleReason, a.RetryAt)
+			}
+			failing, now = false, now.Add(15*time.Minute)
+			a = p.loadCurrent(context.Background(), id)[0]
+			if a.Stale || a.StaleReason != "" || !a.RetryAt.IsZero() {
+				t.Fatalf("successful refresh kept stale reason %q", a.StaleReason)
+			}
+		})
 	}
 }
 

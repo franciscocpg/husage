@@ -113,13 +113,15 @@ func (p *Provider) call(ctx context.Context, method, token string, result any) e
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return errors.New("Cursor rejected this login. Open Cursor CLI to renew it, or run cursor-agent login, then press r.")
 	case http.StatusTooManyRequests:
-		delay := 5 * time.Minute
+		var delay time.Duration
 		if seconds, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && seconds > 0 && seconds <= 86400 {
-			delay = max(delay, time.Duration(seconds)*time.Second)
+			delay = time.Duration(seconds) * time.Second
 		} else if when, err := http.ParseTime(resp.Header.Get("Retry-After")); err == nil {
-			delay = max(delay, when.Sub(p.now()))
+			delay = when.Sub(p.now())
 		}
-		p.next = p.now().Add(delay)
+		if retry := p.now().Add(delay); retry.After(p.next) {
+			p.next = retry
+		}
 		return fmt.Errorf("Cursor rate limit; retry after %s.", p.next.Local().Format("3:04pm"))
 	default:
 		return fmt.Errorf("Cursor usage unavailable (HTTP %d). Retrying in 5 minutes.", resp.StatusCode)

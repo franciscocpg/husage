@@ -44,7 +44,7 @@ func run(args []string, out io.Writer) error {
 	demo := flags.Bool("demo", false, "show sample subscriptions without accessing local accounts")
 	once := flags.Bool("once", false, "print a snapshot and exit")
 	jsonOut := flags.Bool("json", false, "print subscription data as JSON and exit")
-	refresh := flags.Duration("refresh", config.DefaultRefresh, "override saved auto-reload interval for this launch (minimum 5s; API requests at most once per 5m)")
+	refresh := flags.Duration("refresh", config.DefaultRefresh, "override saved auto-reload interval for this launch (minimum 5s; API requests about once per 5m)")
 	zone := flags.String("timezone", "", "IANA timezone for reset times (default: system timezone)")
 	var dirs profileDirs
 	var codexDirs profileDirs

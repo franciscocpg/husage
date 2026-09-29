@@ -4,7 +4,21 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 )
+
+type reloadStartKey struct{}
+
+func WithReloadStart(ctx context.Context, start time.Time) context.Context {
+	return context.WithValue(ctx, reloadStartKey{}, start)
+}
+
+func ReloadStart(ctx context.Context, fallback time.Time) time.Time {
+	if start, ok := ctx.Value(reloadStartKey{}).(time.Time); ok {
+		return start
+	}
+	return fallback
+}
 
 // Combined keeps each provider's cards visible when another provider fails.
 type Combined []Provider
@@ -18,6 +32,7 @@ func (providers Combined) LoginSucceeded(target LoginTarget) {
 }
 
 func (providers Combined) Load(ctx context.Context) ([]Account, error) {
+	ctx = WithReloadStart(ctx, time.Now())
 	items := make([][]Account, len(providers))
 	errs := make([]error, len(providers))
 	var wg sync.WaitGroup

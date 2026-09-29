@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/franciscocpg/husage/internal/subscription"
 )
 
 func TestProfilesCombineOrganizationsAndIsolateCooldowns(t *testing.T) {
@@ -46,6 +48,9 @@ func TestProfilesCombineOrganizationsAndIsolateCooldowns(t *testing.T) {
 	if err != nil || a[0].Error != "" || a[1].Error == "" || a[1].Windows[0].Used != 20 {
 		t.Fatal("one account failure hid other account", a, err)
 	}
+	if a[1].StaleReason != "rate limited" || !a[1].RetryAt.Equal(now.Add(15*time.Minute)) {
+		t.Fatal("rate limit reason or retry time missing", a[1])
+	}
 	now = now.Add(5 * time.Minute)
 	_, err = g.Load(context.Background())
 	if err != nil || calls[0] != 2 || calls[1] != 3 {
@@ -55,6 +60,41 @@ func TestProfilesCombineOrganizationsAndIsolateCooldowns(t *testing.T) {
 	a, err = g.Load(context.Background())
 	if err != nil || len(a) != 2 || a[1].Error == "" || len(a[1].Windows) != 1 {
 		t.Fatal("metadata failure discarded usage", a, err)
+	}
+	if a[1].StaleReason != "" || !a[1].RetryAt.IsZero() {
+		t.Fatal("metadata failure kept the previous stale reason", a[1])
+	}
+}
+
+func TestProfilesReloadEveryFiveMinutesDespiteSlowEarlierProfile(t *testing.T) {
+	home := t.TempDir()
+	first := Options{Home: home, ConfigDir: filepath.Join(home, "first")}
+	second := Options{Home: home, ConfigDir: filepath.Join(home, "second")}
+	write(t, first.identityPath(), `{"oauthAccount":{"accountUuid":"user","organizationUuid":"work","organizationName":"Work"}}`)
+	write(t, second.identityPath(), `{"oauthAccount":{"accountUuid":"user","organizationUuid":"personal","organizationName":"Personal"}}`)
+	g := NewProfiles(first, []Options{first, second})
+	tick := time.Date(2026, 9, 29, 14, 26, 0, 0, time.UTC)
+	now := tick
+	calls := []int{0, 0}
+	for i, p := range g.providers {
+		p.now = func() time.Time { return now }
+		p.readToken = func(context.Context) (string, error) { return "test-token", nil }
+		p.client.Transport = transportFunc(func(*http.Request) (*http.Response, error) {
+			calls[i]++
+			if i == 0 && calls[i] == 1 {
+				now = now.Add(15 * time.Second)
+			}
+			return response(200, `{"five_hour":{"utilization":15}}`), nil
+		})
+	}
+	for reload := range 2 {
+		now = tick.Add(time.Duration(reload) * 5 * time.Minute)
+		if _, err := g.Load(subscription.WithReloadStart(context.Background(), now)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls[0] != 2 || calls[1] != 2 {
+		t.Fatal("a slow profile made the next one skip a reload", calls)
 	}
 }
 
