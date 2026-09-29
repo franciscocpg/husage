@@ -18,7 +18,7 @@ import (
 func TestCardSpacingKeepsDashboardBackground(t *testing.T) {
 	accounts, _ := (subscription.Demo{}).Load(context.Background())
 	for _, width := range []int{80, 120, 200} {
-		rows := base.Width(width).Render(renderAccountRows(accounts, width, time.UTC, time.Now()))
+		rows := base.Width(width).Render(dashboard.renderAccountRows(accounts, width, time.UTC, time.Now()))
 		buffer := uv.NewScreenBuffer(width, lipgloss.Height(rows))
 		uv.NewStyledString(rows).Draw(buffer, buffer.Bounds())
 		for y := 0; y < buffer.Height(); y++ {
@@ -36,12 +36,36 @@ func TestCardSpacingKeepsDashboardBackground(t *testing.T) {
 	}
 }
 
+func TestSnapshotKeepsTerminalBackground(t *testing.T) {
+	accounts, _ := (subscription.Demo{}).Load(context.Background())
+	for _, dark := range []bool{true, false} {
+		snapshot := Snapshot(accounts, 120, time.UTC, time.Now(), dark)
+		buffer := uv.NewScreenBuffer(120, lipgloss.Height(snapshot))
+		uv.NewStyledString(snapshot).Draw(buffer, buffer.Bounds())
+		inkUsed := false
+		for y := 0; y < buffer.Height(); y++ {
+			for x := 0; x < buffer.Width(); x++ {
+				cell := buffer.CellAt(x, y)
+				if cell.Style.Bg != nil {
+					t.Fatalf("dark=%v: cell (%d,%d) paints a background", dark, x, y)
+				}
+				if cell.Style.Fg != nil && color.RGBAModel.Convert(cell.Style.Fg) == color.RGBAModel.Convert(ink) {
+					inkUsed = true
+				}
+			}
+		}
+		if inkUsed != dark {
+			t.Fatalf("dark=%v: light text used=%v", dark, inkUsed)
+		}
+	}
+}
+
 func TestFailedRefreshLabelsRecentCachedUsageAsStale(t *testing.T) {
 	accounts, _ := (subscription.Demo{}).Load(context.Background())
 	a := accounts[0]
 	a.Error = "No Claude login found. Sign in again: " + strings.Repeat("CLAUDE_CONFIG_DIR=/saved/profile claude auth login ", 20)
 	a.Stale = true
-	view := ansi.Strip(renderAccount(a, 100, time.UTC, a.UpdatedAt.Add(time.Minute)))
+	view := ansi.Strip(dashboard.renderAccount(a, 100, time.UTC, a.UpdatedAt.Add(time.Minute)))
 	for _, text := range []string{"38% used", a.Source + " · stale data · updated 1m ago"} {
 		if !strings.Contains(view, text) {
 			t.Fatalf("cached usage display missing %q", text)
@@ -51,11 +75,11 @@ func TestFailedRefreshLabelsRecentCachedUsageAsStale(t *testing.T) {
 		t.Fatal("cached card displayed verbose or duplicate error information", view)
 	}
 	a.Error = ""
-	if lipgloss.Height(view) != lipgloss.Height(renderAccount(a, 100, time.UTC, a.UpdatedAt.Add(time.Minute))) {
+	if lipgloss.Height(view) != lipgloss.Height(dashboard.renderAccount(a, 100, time.UTC, a.UpdatedAt.Add(time.Minute))) {
 		t.Fatal("cached refresh error changed card height")
 	}
 	a.Stale, a.Error = false, ""
-	if strings.Contains(ansi.Strip(renderAccount(a, 100, time.UTC, a.UpdatedAt)), "stale data") {
+	if strings.Contains(ansi.Strip(dashboard.renderAccount(a, 100, time.UTC, a.UpdatedAt)), "stale data") {
 		t.Fatal("successful refresh retained stale warning")
 	}
 }
@@ -65,7 +89,7 @@ func TestStaleMetadataUsesDashboardTimezone(t *testing.T) {
 	a := subscription.Account{Source: "Claude API", UpdatedAt: time.Date(2026, 9, 20, 6, 39, 0, 0, time.UTC)}
 	for _, failed := range []bool{false, true} {
 		a.Stale = failed
-		view := ansi.Strip(renderAccount(a, 100, loc, a.UpdatedAt.Add(2*time.Hour)))
+		view := ansi.Strip(dashboard.renderAccount(a, 100, loc, a.UpdatedAt.Add(2*time.Hour)))
 		if !strings.Contains(view, "Claude API · stale data · updated Sep 20, 3:39am") || strings.Count(view, "stale") != 1 {
 			t.Fatal(view)
 		}
@@ -84,7 +108,7 @@ func TestAuthenticationWarningReplacesVerboseError(t *testing.T) {
 			a.UpdatedAt = time.Time{}
 		}
 		for _, width := range []int{40, 80, 120} {
-			view := ansi.Strip(renderAccount(a, width, time.UTC, time.Now()))
+			view := ansi.Strip(dashboard.renderAccount(a, width, time.UTC, time.Now()))
 			if !strings.Contains(view, "Login required.") || strings.Contains(view, "CLAUDE_CONFIG_DIR") || strings.Contains(view, "Missing credentials") {
 				t.Fatalf("compact warning missing or verbose error leaked: %s", view)
 			}
@@ -100,7 +124,7 @@ func TestAuthenticationWarningReplacesVerboseError(t *testing.T) {
 
 func TestAccountWithoutCachedUsageStillShowsError(t *testing.T) {
 	a := subscription.Account{Source: "Claude API", Error: "Sign in with Claude to load usage."}
-	view := ansi.Strip(renderAccount(a, 100, time.UTC, time.Now()))
+	view := ansi.Strip(dashboard.renderAccount(a, 100, time.UTC, time.Now()))
 	if !strings.Contains(view, a.Error) || !strings.Contains(view, "waiting for usage") || strings.Contains(view, "stale data") {
 		t.Fatal(view)
 	}
@@ -124,7 +148,7 @@ func TestLayoutFitsTerminalAndKeepsBarsOnOneLine(t *testing.T) {
 				t.Fatalf("width %d overflow %d", w, ansi.StringWidth(line))
 			}
 		}
-		card := ansi.Strip(renderAccount(a[0], w, time.UTC, time.Now()))
+		card := ansi.Strip(dashboard.renderAccount(a[0], w, time.UTC, time.Now()))
 		for _, line := range strings.Split(card, "\n") {
 			if strings.Contains(line, "%") && !strings.Contains(line, "% used") {
 				t.Fatalf("split usage label at width %d: %q", w, line)
@@ -239,7 +263,7 @@ func TestExtraSubscriptionsWrapAndRemainScrollable(t *testing.T) {
 	if !strings.Contains(ansi.Strip(m.View().Content), "Third subscription") {
 		t.Fatal("wrapped subscription heading inaccessible")
 	}
-	snapshot := Snapshot(accounts, 200, time.UTC, time.Now())
+	snapshot := Snapshot(accounts, 200, time.UTC, time.Now(), true)
 	for _, line := range strings.Split(snapshot, "\n") {
 		if strings.Contains(line, "Acme Team") && strings.Contains(line, "Personal · Pro") && strings.Contains(line, "Third subscription") {
 			return
@@ -300,7 +324,7 @@ func TestProviderSectionsKeepMixedAccountsTogether(t *testing.T) {
 				t.Fatalf("same-provider cards not side by side at width %d", width)
 			}
 		}
-		if got := ansi.Strip(renderAccounts(accounts, m.contentWidth(), time.UTC, m.now)); got != body {
+		if got := ansi.Strip(dashboard.renderAccounts(accounts, m.contentWidth(), time.UTC, m.now)); got != body {
 			t.Fatal("interactive and snapshot layouts differ")
 		}
 		next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnd})
@@ -311,7 +335,7 @@ func TestProviderSectionsKeepMixedAccountsTogether(t *testing.T) {
 	if accounts[1].Provider != "Codex" {
 		t.Fatal("rendering reordered source accounts")
 	}
-	single := ansi.Strip(renderAccounts(accounts[:1], 80, time.UTC, time.Now()))
+	single := ansi.Strip(dashboard.renderAccounts(accounts[:1], 80, time.UTC, time.Now()))
 	if !strings.Contains(single, "Claude Code · 1 subscription") || strings.Contains(single, "Codex") {
 		t.Fatal("single-provider view includes an empty group or incorrect count")
 	}
