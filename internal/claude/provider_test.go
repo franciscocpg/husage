@@ -36,6 +36,20 @@ func TestUsageAPIAndScopedModelLimits(t *testing.T) {
 	}
 }
 
+func TestUsageIgnoresSevenDaySummariesWithoutUtilization(t *testing.T) {
+	p := New(Options{})
+	p.client.Transport = transportFunc(func(*http.Request) (*http.Response, error) {
+		return response(200, `{"five_hour":{"utilization":4,"resets_at":"2026-09-29T14:09:59Z"},"seven_day":{"utilization":11},"seven_day_breakdown":{"as_of":"2026-09-29T09:21:43Z","rows":[{"key":"claude_code","percent":100}]},"seven_day_notes":["x"],"limits":[{"kind":"weekly_scoped","percent":0,"scope":{"model":{"display_name":"Fable"}}}]}`), nil
+	})
+	w, err := p.fetch(context.Background(), "x")
+	if err != nil || len(w) != 3 {
+		t.Fatalf("windows=%+v err=%v", w, err)
+	}
+	if w[0].Used != 4 || w[1].Used != 11 || w[2].Label != "Current week (Fable)" {
+		t.Fatalf("wrong windows %+v", w)
+	}
+}
+
 func TestUsageFailuresDoNotLeakResponseBodies(t *testing.T) {
 	for _, status := range []int{401, 403, 429, 500, 302} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
@@ -47,7 +61,7 @@ func TestUsageFailuresDoNotLeakResponseBodies(t *testing.T) {
 			}
 		})
 	}
-	for _, body := range []string{`{`, `{}`, `{"five_hour":{}}`, `{"five_hour":{"utilization":-1}}`, `{"five_hour":{"utilization":101}}`, `{"five_hour":{"utilization":25,"resets_at":"bad"}}`} {
+	for _, body := range []string{`{`, `{}`, `{"five_hour":{}}`, `{"five_hour":{"utilization":-1}}`, `{"five_hour":{"utilization":101}}`, `{"five_hour":{"utilization":25,"resets_at":"bad"}}`, `{"seven_day":{}}`, `{"seven_day_opus":{"utilization":null}}`, `{"seven_day_opus":{"utilization":101}}`} {
 		p := New(Options{})
 		p.client.Transport = transportFunc(func(*http.Request) (*http.Response, error) { return response(200, body), nil })
 		if _, err := p.fetch(context.Background(), "x"); err == nil {

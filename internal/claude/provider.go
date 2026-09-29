@@ -158,6 +158,15 @@ type apiWindow struct {
 	Reset *time.Time `json:"resets_at"`
 }
 
+func hasUtilization(data json.RawMessage) bool {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(data, &fields) != nil {
+		return false
+	}
+	_, ok := fields["utilization"]
+	return ok
+}
+
 func (p *Provider) fetch(ctx context.Context, token string) ([]subscription.Window, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.url, nil)
 	if err != nil {
@@ -203,7 +212,7 @@ func (p *Provider) fetch(ctx context.Context, token string) ([]subscription.Wind
 	sort.Strings(keys)
 	windows := []subscription.Window{}
 	for _, key := range keys {
-		if string(raw[key]) == "null" {
+		if string(raw[key]) == "null" || strings.HasPrefix(key, "seven_day_") && !hasUtilization(raw[key]) {
 			continue
 		}
 		var w apiWindow
