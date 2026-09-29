@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"image/color"
 	"math"
 	"strings"
 	"time"
@@ -22,10 +23,48 @@ var (
 	amber  = lipgloss.Color("#E6BC78")
 	red    = lipgloss.Color("#EF8D9A")
 	bg     = lipgloss.Color("#1D1E28")
-	base   = lipgloss.NewStyle().Foreground(ink).Background(bg)
-	dim    = base.Foreground(muted)
-	accent = base.Foreground(purple)
+	base   = dashboard.base
+	dim    = dashboard.dim
+	accent = dashboard.accent
+
+	dashboard = newTheme(theme{
+		bg:           bg,
+		purple:       purple,
+		green:        green,
+		amber:        amber,
+		red:          red,
+		border:       lipgloss.Color("#414052"),
+		activeBorder: lipgloss.Color("#7F70AC"),
+		track:        lipgloss.Color("#45415E"),
+	}, ink, muted)
 )
+
+type theme struct {
+	bg, purple, green, amber, red color.Color
+	border, activeBorder, track   color.Color
+	base, dim, accent             lipgloss.Style
+}
+
+func newTheme(t theme, ink, muted color.Color) theme {
+	t.base = lipgloss.NewStyle().Foreground(ink).Background(t.bg)
+	t.dim = t.base.Foreground(muted)
+	t.accent = t.base.Foreground(t.purple)
+	return t
+}
+
+func snapshotTheme(isDark bool) theme {
+	pick := lipgloss.LightDark(isDark)
+	return newTheme(theme{
+		bg:           lipgloss.NoColor{},
+		purple:       pick(lipgloss.Color("#6B4FD8"), purple),
+		green:        pick(lipgloss.Color("#1F8A55"), green),
+		amber:        pick(lipgloss.Color("#A8660A"), amber),
+		red:          pick(lipgloss.Color("#C23B4E"), red),
+		border:       pick(lipgloss.Color("#C9C6D6"), dashboard.border),
+		activeBorder: dashboard.activeBorder,
+		track:        pick(lipgloss.Color("#D8D5E3"), dashboard.track),
+	}, pick(lipgloss.Color("#1D1E28"), ink), pick(lipgloss.Color("#6B6880"), muted))
+}
 
 type resultMsg struct {
 	accounts []subscription.Account
@@ -331,7 +370,7 @@ func (m Model) bodyLines() []string {
 				}
 			}
 		}
-		parts = append(parts, renderAccounts(accounts, w, m.location, m.now))
+		parts = append(parts, dashboard.renderAccounts(accounts, w, m.location, m.now))
 	}
 	return strings.Split(strings.Join(parts, "\n"), "\n")
 }
@@ -477,7 +516,7 @@ func renderShortcuts(text string) string {
 
 // renderAccounts keeps providers in first-seen order and preserves the account
 // order within each provider, including the active account's leading position.
-func renderAccounts(accounts []subscription.Account, width int, loc *time.Location, now time.Time) string {
+func (t theme) renderAccounts(accounts []subscription.Account, width int, loc *time.Location, now time.Time) string {
 	var providers []string
 	groups := make(map[string][]subscription.Account)
 	for _, account := range accounts {
@@ -498,18 +537,18 @@ func renderAccounts(accounts []subscription.Account, width int, loc *time.Locati
 		if len(group) == 1 {
 			count = "1 subscription"
 		}
-		heading := accent.Bold(true).Render(label) + dim.Render(" · "+count)
+		heading := t.accent.Bold(true).Render(label) + t.dim.Render(" · "+count)
 		heading = ansi.Truncate(heading, max(1, width), "")
 		if remaining := width - lipgloss.Width(heading) - 2; remaining > 0 {
-			heading += dim.Render("  " + strings.Repeat("─", remaining))
+			heading += t.dim.Render("  " + strings.Repeat("─", remaining))
 		}
-		sections = append(sections, heading+"\n\n"+renderAccountRows(group, width, loc, now))
+		sections = append(sections, heading+"\n\n"+t.renderAccountRows(group, width, loc, now))
 	}
 	return strings.Join(sections, "\n\n")
 }
 
 // Each provider's cards fill rows independently and wrap on narrow terminals.
-func renderAccountRows(accounts []subscription.Account, width int, loc *time.Location, now time.Time) string {
+func (t theme) renderAccountRows(accounts []subscription.Account, width int, loc *time.Location, now time.Time) string {
 	if len(accounts) == 0 {
 		return ""
 	}
@@ -521,54 +560,54 @@ func renderAccountRows(accounts []subscription.Account, width int, loc *time.Loc
 		row := accounts[start:min(start+columns, len(accounts))]
 		height := 0
 		for _, a := range row {
-			height = max(height, lipgloss.Height(renderAccount(a, cardWidth, loc, now)))
+			height = max(height, lipgloss.Height(t.renderAccount(a, cardWidth, loc, now)))
 		}
 		var cards []string
 		for i, a := range row {
 			if i > 0 {
 				// JoinHorizontal pads short blocks with unstyled spaces. Give
 				// the spacer the full row height to retain our background.
-				cards = append(cards, base.Width(gap).Height(height).Render(""))
+				cards = append(cards, t.base.Width(gap).Height(height).Render(""))
 			}
-			cards = append(cards, renderAccountSized(a, cardWidth, height, loc, now))
+			cards = append(cards, t.renderAccountSized(a, cardWidth, height, loc, now))
 		}
 		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, cards...))
 	}
 	return strings.Join(rows, "\n\n")
 }
 
-func renderAccount(a subscription.Account, width int, loc *time.Location, now time.Time) string {
-	return renderAccountSized(a, width, 0, loc, now)
+func (t theme) renderAccount(a subscription.Account, width int, loc *time.Location, now time.Time) string {
+	return t.renderAccountSized(a, width, 0, loc, now)
 }
 
-func renderAccountSized(a subscription.Account, width, height int, loc *time.Location, now time.Time) string {
+func (t theme) renderAccountSized(a subscription.Account, width, height int, loc *time.Location, now time.Time) string {
 	inner := max(1, width-6)
-	border := lipgloss.Color("#414052")
+	border := t.border
 	if a.Active {
-		border = lipgloss.Color("#7F70AC")
+		border = t.activeBorder
 	}
-	name := base.Bold(true).Render(safe(a.Name))
-	badge := dim.Render("saved")
+	name := t.base.Bold(true).Render(safe(a.Name))
+	badge := t.dim.Render("saved")
 	if a.Active {
-		badge = base.Foreground(green).Render("● active")
+		badge = t.base.Foreground(t.green).Render("● active")
 	}
 	gap := inner - lipgloss.Width(name) - lipgloss.Width(badge)
 	heading := name + "\n" + badge
 	if gap >= 2 {
 		// Nested styles reset ANSI colors; the gap needs its own background.
-		heading = name + base.Render(strings.Repeat(" ", gap)) + badge
+		heading = name + t.base.Render(strings.Repeat(" ", gap)) + badge
 	}
-	parts := []string{heading, dim.Render(safe(a.Email)), ""}
+	parts := []string{heading, t.dim.Render(safe(a.Email)), ""}
 	for i, w := range a.Windows {
 		if i > 0 {
 			parts = append(parts, "")
 		}
-		parts = append(parts, base.Bold(true).Render(safe(w.Label)), renderBar(w.Used, inner), dim.Render(resetText(w.ResetsAt, loc, now)))
+		parts = append(parts, t.base.Bold(true).Render(safe(w.Label)), t.renderBar(w.Used, inner), t.dim.Render(resetText(w.ResetsAt, loc, now)))
 	}
 	if a.Warning != "" {
-		parts = append(parts, "", base.Foreground(amber).Width(inner).Render(safe(a.Warning)))
+		parts = append(parts, "", t.base.Foreground(t.amber).Width(inner).Render(safe(a.Warning)))
 	} else if a.Error != "" && !(a.Stale && len(a.Windows) > 0) {
-		parts = append(parts, "", base.Foreground(amber).Width(inner).Render(safe(a.Error)))
+		parts = append(parts, "", t.base.Foreground(t.amber).Width(inner).Render(safe(a.Error)))
 	}
 	stale := a.Stale || (!a.UpdatedAt.IsZero() && now.Sub(a.UpdatedAt) >= 10*time.Minute)
 	metadata := safe(a.Source)
@@ -576,29 +615,29 @@ func renderAccountSized(a subscription.Account, width, height int, loc *time.Loc
 		metadata += " · stale data"
 	}
 	metadata += " · " + ageText(a.UpdatedAt.In(loc), now)
-	metaStyle := dim
+	metaStyle := t.dim
 	if stale || a.UpdatedAt.IsZero() {
-		metaStyle = base.Foreground(amber)
+		metaStyle = t.base.Foreground(t.amber)
 	}
 	parts = append(parts, metaStyle.Render(metadata))
-	return base.Border(lipgloss.RoundedBorder()).BorderForeground(border).BorderBackground(bg).Padding(0, 2).Width(width).Height(height).Render(strings.Join(parts, "\n"))
+	return t.base.Border(lipgloss.RoundedBorder()).BorderForeground(border).BorderBackground(t.bg).Padding(0, 2).Width(width).Height(height).Render(strings.Join(parts, "\n"))
 }
 
-func renderBar(used float64, width int) string {
+func (t theme) renderBar(used float64, width int) string {
 	if math.IsNaN(used) || math.IsInf(used, 0) {
-		return dim.Render("Usage unavailable")
+		return t.dim.Render("Usage unavailable")
 	}
 	used = math.Max(0, used)
 	label := fmt.Sprintf(" %3.0f%% used", used)
 	w := max(1, width-len(label))
 	filled := min(w, int(math.Round(math.Min(100, used)/100*float64(w))))
-	color := purple
+	fill := t.purple
 	if used >= 90 {
-		color = red
+		fill = t.red
 	} else if used >= 75 {
-		color = amber
+		fill = t.amber
 	}
-	return base.Foreground(color).Render(strings.Repeat("█", filled)) + base.Foreground(lipgloss.Color("#45415E")).Render(strings.Repeat("░", w-filled)) + base.Render(label)
+	return t.base.Foreground(fill).Render(strings.Repeat("█", filled)) + t.base.Foreground(t.track).Render(strings.Repeat("░", w-filled)) + t.base.Render(label)
 }
 
 func resetText(t time.Time, loc *time.Location, now time.Time) string {
@@ -646,9 +685,10 @@ func safe(s string) string {
 }
 
 // Snapshot renders the same cards without starting an interactive terminal.
-func Snapshot(accounts []subscription.Account, width int, loc *time.Location, now time.Time) string {
-	parts := []string{accent.Bold(true).Render("◈ husage") + dim.Render("  /  Claude Code · Codex · Cursor"), ""}
-	parts = append(parts, renderAccounts(accounts, max(20, width), loc, now))
+func Snapshot(accounts []subscription.Account, width int, loc *time.Location, now time.Time, darkBackground bool) string {
+	t := snapshotTheme(darkBackground)
+	parts := []string{t.accent.Bold(true).Render("◈ husage") + t.dim.Render("  /  Claude Code · Codex · Cursor"), ""}
+	parts = append(parts, t.renderAccounts(accounts, max(20, width), loc, now))
 	if len(accounts) == 0 {
 		parts = append(parts, "No subscription found. Sign in with Claude Code, Codex or Cursor CLI.")
 	}

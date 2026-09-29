@@ -14,6 +14,8 @@ import (
 	_ "time/tzdata"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/franciscocpg/husage/internal/claude"
 	"github.com/franciscocpg/husage/internal/codex"
 	"github.com/franciscocpg/husage/internal/codexcli"
@@ -190,7 +192,7 @@ func run(args []string, out io.Writer) error {
 			enc.SetIndent("", "  ")
 			return enc.Encode(accounts)
 		}
-		_, err = fmt.Fprintln(out, tui.Snapshot(accounts, *width, loc, time.Now()))
+		_, err = lipgloss.Fprintln(out, tui.Snapshot(accounts, *width, loc, time.Now(), hasDarkBackground(out)))
 		return err
 	}
 	configStore := config.Store{Home: home}
@@ -217,6 +219,14 @@ func run(args []string, out io.Writer) error {
 		return nil
 	}
 	return err
+}
+
+func hasDarkBackground(out io.Writer) bool {
+	f, ok := out.(*os.File)
+	if !ok || colorprofile.Detect(f, os.Environ()) <= colorprofile.ASCII {
+		return true
+	}
+	return lipgloss.HasDarkBackground(os.Stdin, f)
 }
 
 func debugLogPath(home string) string {
