@@ -96,6 +96,25 @@ func TestStaleMetadataUsesDashboardTimezone(t *testing.T) {
 	}
 }
 
+func TestStaleMetadataExplainsTransientFailure(t *testing.T) {
+	loc := time.FixedZone("America/Sao_Paulo", -3*60*60)
+	updated := time.Date(2026, 9, 29, 14, 14, 0, 0, time.UTC)
+	a := subscription.Account{Source: "Claude API", UpdatedAt: updated, Stale: true, StaleReason: "API temporarily unavailable", RetryAt: updated.Add(17 * time.Minute)}
+	now := updated.Add(12 * time.Minute)
+	view := ansi.Strip(dashboard.renderAccount(a, 120, loc, now))
+	if !strings.Contains(view, "Claude API · stale data · API temporarily unavailable, retrying 11:31am · updated 12m ago") {
+		t.Fatal(view)
+	}
+	a.RetryAt = a.RetryAt.Add(24 * time.Hour)
+	if view := ansi.Strip(dashboard.renderAccount(a, 120, loc, now)); !strings.Contains(view, "retrying Sep 30 at 11:31am") {
+		t.Fatal(view)
+	}
+	a.StaleReason = ""
+	if view := ansi.Strip(dashboard.renderAccount(a, 120, loc, now)); !strings.Contains(view, "Claude API · stale data · updated 12m ago") || strings.Contains(view, "retrying") {
+		t.Fatal(view)
+	}
+}
+
 func TestAuthenticationWarningReplacesVerboseError(t *testing.T) {
 	accounts, _ := (subscription.Demo{}).Load(context.Background())
 	for _, cached := range []bool{true, false} {

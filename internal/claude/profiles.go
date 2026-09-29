@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/franciscocpg/husage/internal/subscription"
 )
@@ -92,6 +93,7 @@ func (g *Profiles) Load(ctx context.Context) ([]subscription.Account, error) {
 				a.Warning = recoveryWarning(err)
 				a.LoginRequired = requiresLogin(err)
 				a.Stale = len(a.Windows) > 0
+				a.StaleReason, a.RetryAt = "", time.Time{}
 			} else {
 				// A logged-out profile must not retain the previous account's usage.
 				delete(g.last, p)

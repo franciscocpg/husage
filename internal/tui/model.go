@@ -613,6 +613,9 @@ func (t theme) renderAccountSized(a subscription.Account, width, height int, loc
 	metadata := safe(a.Source)
 	if stale {
 		metadata += " · stale data"
+		if a.StaleReason != "" && !a.RetryAt.IsZero() {
+			metadata += " · " + safe(a.StaleReason) + ", retrying " + clockText(a.RetryAt, loc, now)
+		}
 	}
 	metadata += " · " + ageText(a.UpdatedAt.In(loc), now)
 	metaStyle := t.dim
@@ -644,20 +647,23 @@ func resetText(t time.Time, loc *time.Location, now time.Time) string {
 	if t.IsZero() {
 		return "Reset time unavailable"
 	}
-	local := t.In(loc)
 	zone := loc.String()
 	if zone == "Local" {
-		zone, _ = local.Zone()
-	}
-	format := "Jan 2 at 3:04pm"
-	if local.Format("2006-01-02") == now.In(loc).Format("2006-01-02") {
-		format = "3:04pm"
+		zone, _ = t.In(loc).Zone()
 	}
 	prefix := "Resets "
 	if !t.After(now) {
 		prefix = "Reset passed · "
 	}
-	return prefix + local.Format(format) + " (" + zone + ")"
+	return prefix + clockText(t, loc, now) + " (" + zone + ")"
+}
+
+func clockText(t time.Time, loc *time.Location, now time.Time) string {
+	local := t.In(loc)
+	if local.Format("2006-01-02") == now.In(loc).Format("2006-01-02") {
+		return local.Format("3:04pm")
+	}
+	return local.Format("Jan 2 at 3:04pm")
 }
 
 func ageText(t, now time.Time) string {

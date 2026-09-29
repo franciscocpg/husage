@@ -26,6 +26,8 @@ type Account struct {
 	LoginRequired bool         `json:"login_required,omitempty"`
 	Login         *LoginTarget `json:"-"` // Native profile selected by the provider, never inferred from a label.
 	Stale         bool         `json:"stale,omitempty"`
+	StaleReason   string       `json:"stale_reason,omitempty"`
+	RetryAt       time.Time    `json:"retry_at,omitzero"`
 }
 
 type LoginTarget struct {

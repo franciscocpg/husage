@@ -46,6 +46,9 @@ func TestProfilesCombineOrganizationsAndIsolateCooldowns(t *testing.T) {
 	if err != nil || a[0].Error != "" || a[1].Error == "" || a[1].Windows[0].Used != 20 {
 		t.Fatal("one account failure hid other account", a, err)
 	}
+	if a[1].StaleReason != "rate limited" || !a[1].RetryAt.Equal(now.Add(15*time.Minute)) {
+		t.Fatal("rate limit reason or retry time missing", a[1])
+	}
 	now = now.Add(5 * time.Minute)
 	_, err = g.Load(context.Background())
 	if err != nil || calls[0] != 2 || calls[1] != 3 {
@@ -55,6 +58,9 @@ func TestProfilesCombineOrganizationsAndIsolateCooldowns(t *testing.T) {
 	a, err = g.Load(context.Background())
 	if err != nil || len(a) != 2 || a[1].Error == "" || len(a[1].Windows) != 1 {
 		t.Fatal("metadata failure discarded usage", a, err)
+	}
+	if a[1].StaleReason != "" || !a[1].RetryAt.IsZero() {
+		t.Fatal("metadata failure kept the previous stale reason", a[1])
 	}
 }
 

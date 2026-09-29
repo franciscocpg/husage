@@ -136,6 +136,10 @@ func (p *Provider) loadCurrent(ctx context.Context, id identity) []subscription.
 		a.Warning = recoveryWarning(err)
 		a.LoginRequired = requiresLogin(err)
 		a.Stale = len(a.Windows) > 0
+		var transient transientError
+		if a.Stale && errors.As(err, &transient) {
+			a.StaleReason, a.RetryAt = transient.reason, p.nextFetch
+		}
 	}
 	p.cached = []subscription.Account{a}
 	return p.cached
@@ -152,6 +156,13 @@ func (p *Provider) fetchForIdentity(ctx context.Context, id identity, token stri
 }
 
 var errUsageUnauthorized = errors.New("Claude usage rejected this login. Sign in again for this profile.")
+
+type transientError struct {
+	detail string
+	reason string
+}
+
+func (e transientError) Error() string { return e.detail }
 
 type apiWindow struct {
 	Used  *float64   `json:"utilization"`
@@ -178,7 +189,7 @@ func (p *Provider) fetch(ctx context.Context, token string) ([]subscription.Wind
 	req.Header.Set("User-Agent", "husage/0.1.0")
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return nil, errors.New("Cannot reach Claude usage. Check your connection; retrying in 5 minutes.")
+		return nil, transientError{"Cannot reach Claude usage. Check your connection; retrying in 5 minutes.", "API unreachable"}
 	}
 	defer resp.Body.Close()
 	switch resp.StatusCode {
@@ -195,9 +206,13 @@ func (p *Provider) fetch(ctx context.Context, token string) ([]subscription.Wind
 			delay = max(delay, t.Sub(p.now()))
 		}
 		p.nextFetch = p.now().Add(delay)
-		return nil, fmt.Errorf("Claude rate limit; retry after %s.", p.nextFetch.Local().Format("3:04pm"))
+		return nil, transientError{fmt.Sprintf("Claude rate limit; retry after %s.", p.nextFetch.Local().Format("3:04pm")), "rate limited"}
 	default:
-		return nil, fmt.Errorf("Claude usage unavailable (HTTP %d). Retrying in 5 minutes.", resp.StatusCode)
+		detail := fmt.Sprintf("Claude usage unavailable (HTTP %d). Retrying in 5 minutes.", resp.StatusCode)
+		if resp.StatusCode >= 500 {
+			return nil, transientError{detail, "API temporarily unavailable"}
+		}
+		return nil, errors.New(detail)
 	}
 	var raw map[string]json.RawMessage
 	if json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&raw) != nil {
