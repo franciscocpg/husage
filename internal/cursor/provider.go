@@ -104,8 +104,15 @@ func (p *Provider) Load(ctx context.Context) ([]subscription.Account, error) {
 		if len(p.cached) > 0 && (a.ID == "cursor:current" || a.ID == p.cached[0].ID) {
 			a = p.cached[0]
 		}
-		a.Error = err.Error()
-		a.Stale = len(a.Windows) > 0
+		a.Error, a.Warning, a.StaleReason, a.RetryAt = err.Error(), "", "", time.Time{}
+		a.Stale, a.LoginRequired = len(a.Windows) > 0, errors.Is(err, errRejected)
+		if a.LoginRequired {
+			a.Warning = a.Error
+		}
+		var transient transientError
+		if a.Stale && errors.As(err, &transient) {
+			a.StaleReason, a.RetryAt = transient.reason, p.next
+		}
 	}
 	p.cached = []subscription.Account{a}
 	return p.cached, nil

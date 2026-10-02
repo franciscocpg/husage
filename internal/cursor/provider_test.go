@@ -270,3 +270,89 @@ func TestEnableRestoresCursorWithoutNewLoginOrBypassingCooldown(t *testing.T) {
 		t.Fatal("removed account did not return immediately", a, err)
 	}
 }
+
+func TestFailedRefreshExplainsCachedUsage(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		fail   func() (*http.Response, error)
+		reason string
+		retry  time.Duration
+		login  bool
+	}{
+		{"unavailable", func() (*http.Response, error) { return response(503, ""), nil }, "API temporarily unavailable", subscription.FetchCooldown, false},
+		{"rate limited", func() (*http.Response, error) {
+			r := response(429, "")
+			r.Header.Set("Retry-After", "900")
+			return r, nil
+		}, "rate limited", 15 * time.Minute, false},
+		{"unreachable", func() (*http.Response, error) { return nil, errors.New("no route to host") }, "API unreachable", subscription.FetchCooldown, false},
+		{"not found", func() (*http.Response, error) { return response(404, ""), nil }, "", 0, false},
+		{"unauthorized", func() (*http.Response, error) { return response(401, ""), nil }, "", 0, true},
+		{"forbidden", func() (*http.Response, error) { return response(403, ""), nil }, "", 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := New(Options{})
+			now := time.Date(2026, 10, 2, 14, 9, 0, 0, time.UTC)
+			p.now = func() time.Time { return now }
+			p.token = func(context.Context, string) (string, error) { return "test-token", nil }
+			failing := false
+			p.client.Transport = transportFunc(func(r *http.Request) (*http.Response, error) {
+				if failing {
+					return tc.fail()
+				}
+				if strings.HasSuffix(r.URL.Path, "/GetMe") {
+					return response(200, `{"authId":"user","userId":7,"teamId":1}`), nil
+				}
+				return response(200, fixture), nil
+			})
+			p.Load(context.Background())
+			failing, now = true, now.Add(5*time.Minute)
+			a, _ := p.Load(context.Background())
+			var retryAt time.Time
+			if tc.retry > 0 {
+				retryAt = now.Add(tc.retry)
+			}
+			if !a[0].Stale || a[0].StaleReason != tc.reason || !a[0].RetryAt.Equal(retryAt) {
+				t.Fatalf("stale=%v reason=%q retry=%v", a[0].Stale, a[0].StaleReason, a[0].RetryAt)
+			}
+			if a[0].LoginRequired != tc.login || (a[0].Warning != "") != tc.login {
+				t.Fatalf("login=%v warning=%q", a[0].LoginRequired, a[0].Warning)
+			}
+			failing, now = false, now.Add(15*time.Minute)
+			a, _ = p.Load(context.Background())
+			if a[0].Stale || a[0].StaleReason != "" || !a[0].RetryAt.IsZero() || a[0].Warning != "" || a[0].LoginRequired {
+				t.Fatalf("successful refresh kept failure state %+v", a[0])
+			}
+		})
+	}
+}
+
+func TestLaterFailureReplacesEarlierExplanation(t *testing.T) {
+	p := New(Options{})
+	now := time.Date(2026, 10, 2, 14, 9, 0, 0, time.UTC)
+	p.now = func() time.Time { return now }
+	p.token = func(context.Context, string) (string, error) { return "test-token", nil }
+	status := 200
+	p.client.Transport = transportFunc(func(r *http.Request) (*http.Response, error) {
+		if status != 200 {
+			return response(status, ""), nil
+		}
+		if strings.HasSuffix(r.URL.Path, "/GetMe") {
+			return response(200, `{"authId":"user","userId":7,"teamId":1}`), nil
+		}
+		return response(200, fixture), nil
+	})
+	p.Load(context.Background())
+	status, now = 401, now.Add(5*time.Minute)
+	p.Load(context.Background())
+	status, now = 503, now.Add(5*time.Minute)
+	a, _ := p.Load(context.Background())
+	if a[0].Warning != "" || a[0].LoginRequired || a[0].StaleReason != "API temporarily unavailable" {
+		t.Fatalf("kept earlier failure state %+v", a[0])
+	}
+	status, now = 404, now.Add(5*time.Minute)
+	a, _ = p.Load(context.Background())
+	if a[0].StaleReason != "" || !a[0].RetryAt.IsZero() {
+		t.Fatalf("kept earlier stale reason %+v", a[0])
+	}
+}
