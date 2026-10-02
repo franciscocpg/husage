@@ -6,26 +6,26 @@ cask "husage" do
     end
   end
 
-  version "0.4.0"
+  version "0.4.1"
 
   on_macos do
     on_intel do
-      sha256 "98f9c00c7d6d88321f19bd106687256d633b41075c90d8160c80948159b2d69d"
+      sha256 "39bbbb34c2bb98a95184e71758041060c4a5df6e22cb483ddd25e3a7862bc246"
       url "https://github.com/franciscocpg/husage/releases/download/v#{version}/husage_#{version}_darwin_amd64.tar.gz"
     end
     on_arm do
-      sha256 "fe2bc911d415da4ad7ebab229e0d8503a6c981d28eae18403c4a4e5f616c98bf"
+      sha256 "6d0f82a2ec0350c025a887859a7b1d622609d76fc5093d3f222317a86b324c29"
       url "https://github.com/franciscocpg/husage/releases/download/v#{version}/husage_#{version}_darwin_arm64.tar.gz"
     end
   end
 
   on_linux do
     on_intel do
-      sha256 "b006baf348f2cab52e43238028fbe68e08207e9eeb70026386c0f0c9228e9c5c"
+      sha256 "83c84840b610cb1140d90fd36aac9ac286edb13db7356669337f47442e91607e"
       url "https://github.com/franciscocpg/husage/releases/download/v#{version}/husage_#{version}_linux_amd64.tar.gz"
     end
     on_arm do
-      sha256 "5ac263a254604fb795fa6f42d9756d5777d3deaaa18666216acef92115e93233"
+      sha256 "eb86a8b405228f115a9332d869ef0f89a16f7d93e821e15cd47597afc1ad80a3"
       url "https://github.com/franciscocpg/husage/releases/download/v#{version}/husage_#{version}_linux_arm64.tar.gz"
     end
   end
