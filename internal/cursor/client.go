@@ -17,6 +17,15 @@ import (
 
 const dashboardURL = "https://api2.cursor.sh/aiserver.v1.DashboardService/"
 
+var errRejected = errors.New("Cursor rejected this login. Open Cursor CLI to renew it, or run cursor-agent login, then press r.")
+
+type transientError struct {
+	detail string
+	reason string
+}
+
+func (e transientError) Error() string { return e.detail }
+
 type identity struct {
 	AuthID   string `json:"authId"`
 	UserID   int64  `json:"userId"`
@@ -105,13 +114,13 @@ func (p *Provider) call(ctx context.Context, method, token string, result any) e
 	req.Header.Set("User-Agent", "husage/0.1.0")
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return errors.New("Cannot reach Cursor usage. Retrying in 5 minutes.")
+		return transientError{"Cannot reach Cursor usage. Retrying in 5 minutes.", "API unreachable"}
 	}
 	defer resp.Body.Close()
 	switch resp.StatusCode {
 	case http.StatusOK:
 	case http.StatusUnauthorized, http.StatusForbidden:
-		return errors.New("Cursor rejected this login. Open Cursor CLI to renew it, or run cursor-agent login, then press r.")
+		return errRejected
 	case http.StatusTooManyRequests:
 		var delay time.Duration
 		if seconds, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && seconds > 0 && seconds <= 86400 {
@@ -122,9 +131,13 @@ func (p *Provider) call(ctx context.Context, method, token string, result any) e
 		if retry := p.now().Add(delay); retry.After(p.next) {
 			p.next = retry
 		}
-		return fmt.Errorf("Cursor rate limit; retry after %s.", p.next.Local().Format("3:04pm"))
+		return transientError{fmt.Sprintf("Cursor rate limit; retry after %s.", p.next.Local().Format("3:04pm")), "rate limited"}
 	default:
-		return fmt.Errorf("Cursor usage unavailable (HTTP %d). Retrying in 5 minutes.", resp.StatusCode)
+		detail := fmt.Sprintf("Cursor usage unavailable (HTTP %d). Retrying in 5 minutes.", resp.StatusCode)
+		if resp.StatusCode >= 500 {
+			return transientError{detail, "API temporarily unavailable"}
+		}
+		return errors.New(detail)
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(result); err != nil {
 		return errors.New("Cursor returned an invalid usage response.")
