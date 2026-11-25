@@ -22,6 +22,7 @@ import (
 	"github.com/franciscocpg/husage/internal/config"
 	"github.com/franciscocpg/husage/internal/cursor"
 	"github.com/franciscocpg/husage/internal/profile"
+	"github.com/franciscocpg/husage/internal/stderr"
 	"github.com/franciscocpg/husage/internal/subscription"
 	"github.com/franciscocpg/husage/internal/tui"
 )
@@ -81,6 +82,9 @@ func run(args []string, out io.Writer) error {
 		return err
 	}
 	var provider subscription.Provider
+	// redirect is standard error going to stderr.log while the dashboard
+	// runs on macOS. The login commands read it as they run, once it's set.
+	var redirect *stderr.Redirect
 	var profileActions []*tui.ProfileActions
 	var removeActions *tui.RemoveActions
 	var loginActions *tui.LoginActions
@@ -114,13 +118,15 @@ func run(args []string, out io.Writer) error {
 		loginActions = &tui.LoginActions{
 			Command: profile.ExistingLoginCommand,
 			Login: func(ctx context.Context, target subscription.LoginTarget) tea.ExecCommand {
-				return profile.NewExistingLogin(ctx, target)
+				return onTerminal(profile.NewExistingLogin(ctx, target), redirect)
 			},
 			Succeeded: provider.(subscription.LoginRefresher).LoginSucceeded,
 		}
 		store := profile.Store{Home: home}
 		profileActions = append(profileActions, &tui.ProfileActions{Directory: store.Directory,
-			Login: func(ctx context.Context, name string) tea.ExecCommand { return profile.NewLogin(ctx, store, name) },
+			Login: func(ctx context.Context, name string) tea.ExecCommand {
+				return onTerminal(profile.NewLogin(ctx, store, name), redirect)
+			},
 			Register: func(ctx context.Context, name string) (string, error) {
 				dir, err := store.Register(ctx, name)
 				if err == nil {
@@ -159,7 +165,9 @@ func run(args []string, out io.Writer) error {
 				}
 			}}
 		profileActions = append(profileActions, &tui.ProfileActions{Name: "Codex", Kind: "codex", Directory: codexStore.Directory, Command: codexcli.LoginCommand,
-			Login: func(ctx context.Context, name string) tea.ExecCommand { return profile.NewLogin(ctx, codexStore, name) },
+			Login: func(ctx context.Context, name string) tea.ExecCommand {
+				return onTerminal(profile.NewLogin(ctx, codexStore, name), redirect)
+			},
 			Register: func(ctx context.Context, name string) (string, error) {
 				dir, err := codexStore.Register(ctx, name)
 				if err == nil {
@@ -214,12 +222,38 @@ func run(args []string, out io.Writer) error {
 		WithRemoveActions(removeActions).
 		WithLoginActions(loginActions).
 		WithConfigActions(&tui.ConfigActions{Save: configStore.Save})
-	_, err = tea.NewProgram(model, tea.WithContext(ctx), tea.WithOutput(out)).Run()
-	if ctx.Err() != nil {
-		return nil
+	// From before the dashboard starts any command until it closed: on
+	// macOS, the commands could write to the terminal over the dashboard.
+	// The demo starts none.
+	if !*demo {
+		path := stderrLogPath(home)
+		_ = os.MkdirAll(filepath.Dir(path), 0700)
+		redirect = stderr.ToFile(path)
 	}
+	_, err = tea.NewProgram(model, tea.WithContext(ctx), tea.WithOutput(out)).Run()
+	redirect.Mark()
+	if ctx.Err() != nil {
+		err = nil
+	}
+	// When the dashboard failed, all that went to the file shows, such as
+	// the panic Bubble Tea recovered from as the dashboard closed.
+	redirect.Restore(err != nil)
 	return err
 }
+
+// onTerminal runs a login command with its standard error on the terminal:
+// Bubble Tea gives it os.Stderr, which goes to stderr.log while the dashboard
+// runs on macOS.
+func onTerminal(c tea.ExecCommand, redirect *stderr.Redirect) tea.ExecCommand {
+	return terminalStderr{ExecCommand: c, terminal: redirect.Terminal()}
+}
+
+type terminalStderr struct {
+	tea.ExecCommand
+	terminal *os.File
+}
+
+func (c terminalStderr) SetStderr(io.Writer) { c.ExecCommand.SetStderr(c.terminal) }
 
 func hasDarkBackground(out io.Writer) bool {
 	f, ok := out.(*os.File)
@@ -231,6 +265,12 @@ func hasDarkBackground(out io.Writer) bool {
 
 func debugLogPath(home string) string {
 	return filepath.Join(home, ".config", "husage", "debug.log")
+}
+
+// stderrLogPath is where standard error goes while the dashboard runs on
+// macOS.
+func stderrLogPath(home string) string {
+	return filepath.Join(home, ".config", "husage", "stderr.log")
 }
 
 func openDebugLog(home string) (*os.File, error) {

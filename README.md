@@ -77,6 +77,8 @@ The dashboard shows account names, email addresses, the active login for each pr
 | Home / End, `g` / `G` | First / last account |
 | `q`, Esc, Ctrl+C | Quit |
 
+On macOS, while the dashboard runs in a terminal, husage sends its standard error to `~/.config/husage/stderr.log` (mode `0600`) and keeps the previous run's file as `stderr.old.log`. Once memory runs critically low, macOS loads its malloc stack logging library into running programs, and from then on every command husage starts, such as `security` for the Keychain or `codex app-server` on each refresh, writes `husage(PID) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.` to it as it starts. On the terminal, these lines would garble the dashboard. When the dashboard closes, husage shows what else went to the file after it closed, or all of it when the dashboard failed, such as a recovered panic, without those lines. Login commands started from the dashboard still write to the terminal. A crash still shows on the terminal, except the line a fatal error starts with, such as `fatal error: concurrent map writes`, and anything a macOS library writes before it aborts. Those go only to `stderr.log`, which becomes `stderr.old.log` at the next dashboard launch.
+
 ## Configuration
 
 The dashboard automatically reloads every **5 minutes** by default. On the first interactive launch, husage creates `~/.config/husage/config.json`:
@@ -247,7 +249,7 @@ GitHub Actions runs these checks on pushes to `main` and on pull requests, using
 
 The `internal/subscription.Provider` interface separates acquisition from rendering. Add another harness by implementing `Load(context.Context)` and returning account names, usage windows, timestamps, and source/error information. The adapters live in `internal/claude`, `internal/codex`, and `internal/cursor`; the Bubble Tea model lives in `internal/tui`.
 
-Tests cover installer platform detection, checksum verification, failed-install preservation and cleanup, native Claude account discovery, multiple organizations sharing an email, profile lists and overrides, credential isolation, partial failures, duplicate subscriptions, missing and malformed metadata, scoped model limits, refresh cooldowns, rate-limit backoff, terminal widths, scrolling, and timezone conversion. The UI has also been exercised in a real PTY for resize, refresh, scrolling, and clean terminal restoration.
+Tests cover installer platform detection, checksum verification, failed-install preservation and cleanup, native Claude account discovery, multiple organizations sharing an email, profile lists and overrides, credential isolation, partial failures, duplicate subscriptions, missing and malformed metadata, scoped model limits, refresh cooldowns, rate-limit backoff, terminal widths, scrolling, timezone conversion, and keeping standard error off the dashboard on macOS. The UI has also been exercised in a real PTY for resize, refresh, scrolling, and clean terminal restoration.
 
 ## Releases
 

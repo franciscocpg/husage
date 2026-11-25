@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -42,5 +44,22 @@ func TestVersionDoesNotReadAccountConfiguration(t *testing.T) {
 	}
 	if got, want := out.String(), "husage "+version+" (commit "+commit+")\n"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+type execCommand struct{ stderr io.Writer }
+
+func (*execCommand) Run() error              { return nil }
+func (*execCommand) SetStdin(io.Reader)      {}
+func (*execCommand) SetStdout(io.Writer)     {}
+func (c *execCommand) SetStderr(w io.Writer) { c.stderr = w }
+
+// Bubble Tea gives a login os.Stderr, which goes to stderr.log while the
+// dashboard runs on macOS: the login gets the terminal instead.
+func TestLoginStderrStaysOnTerminal(t *testing.T) {
+	login := &execCommand{}
+	onTerminal(login, nil).SetStderr(&bytes.Buffer{})
+	if login.stderr != os.Stderr {
+		t.Errorf("login stderr = %v, want the terminal, os.Stderr without a redirect", login.stderr)
 	}
 }
